@@ -1,0 +1,331 @@
+"""Compute what normal looks like from history a customer already has.
+
+Pure functions over plain alerts and closed tickets, no database and no model.
+Nothing here closes an alert. ``assess`` returns a recommendation and its reasons.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    Mapping,
+    Optional,
+    Tuple,
+)
+
+BENIGN_DISPOSITIONS = frozenset({"benign_positive", "false_positive"})
+TRUE_POSITIVE = "true_positive"
+
+# Labels and history a clean signature needs before it can be a dismiss candidate.
+MIN_CLEAN_LABELS = 5
+MIN_ROUTINE_ACTIVE_DAYS = 5
+MIN_ENTITY_SIGHTINGS = 3
+# Enough clean tickets that a new user or host on this kind of alert stays routine.
+MIN_STRONG_LABELS = 20
+ROUTINE_SEVERITIES = frozenset({"info", "low", "medium"})
+MISS_CONFIDENCE = 0.05
+
+_IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_HEX = re.compile(r"\b[0-9a-f]{8,}\b", re.I)
+_NUMBER = re.compile(r"\b\d+\b")
+
+
+class Stage1(str, Enum):
+    ESCALATE = "escalate"
+    ABSTAIN = "abstain"
+    DISMISS_CANDIDATE = "dismiss_candidate"
+
+
+@dataclass(frozen=True)
+class Alert:
+    alert_id: str
+    source: str
+    title: str
+    severity: str
+    observed_at: datetime
+    entities: FrozenSet[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """A closed ticket's answer, already filtered to labels worth trusting."""
+
+    signature: str
+    disposition: str
+    closed_at: datetime
+    entities: FrozenSet[str] = frozenset()
+
+
+@dataclass
+class SignatureBaseline:
+    signature: str
+    count: int = 0
+    active_days: int = 0
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    entity_counts: Counter = field(default_factory=Counter)
+    entity_benign: Counter = field(default_factory=Counter)
+    entity_true_positive: Counter = field(default_factory=Counter)
+    benign: int = 0
+    true_positive: int = 0
+
+    @property
+    def labelled(self) -> int:
+        return self.benign + self.true_positive
+
+
+@dataclass
+class Baseline:
+    as_of: datetime
+    signatures: Dict[str, SignatureBaseline]
+    alerts_seen: int
+    days_covered: int
+
+
+@dataclass(frozen=True)
+class Assessment:
+    stage1: Stage1
+    rule: str
+    reasons: Tuple[str, ...]
+
+
+def parse_time(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _entities(finding: Mapping[str, Any]) -> FrozenSet[str]:
+    context = finding.get("iocs") or finding.get("entity_context") or {}
+    if not isinstance(context, Mapping):
+        return frozenset()
+    kinds = (
+        ("user", ("usernames", "users")),
+        ("ip", ("src_ips", "dst_ips")),
+        ("host", ("hostnames", "hosts")),
+    )
+    found = set()
+    for kind, keys in kinds:
+        for key in keys:
+            values = context.get(key) or []
+            if isinstance(values, (list, tuple, set, frozenset)):
+                found.update(f"{kind}:{v}" for v in values if v)
+    return frozenset(found)
+
+
+def alert_from_finding(finding: Mapping[str, Any]) -> Optional[Alert]:
+    """An adapter or upload row as an Alert. None when it has no usable time."""
+    observed = parse_time(finding.get("timestamp"))
+    if observed is None:
+        return None
+    return Alert(
+        alert_id=str(
+            finding.get("finding_id")
+            or finding.get("id")
+            or finding.get("external_id")
+            or ""
+        ),
+        source=str(finding.get("data_source") or finding.get("source") or "unknown"),
+        title=str(finding.get("title") or finding.get("rule_name") or "Untitled alert"),
+        severity=str(finding.get("severity") or "unknown").lower(),
+        observed_at=observed,
+        entities=_entities(finding),
+    )
+
+
+def signature_of(source: str, title: str, entities: Iterable[str] = ()) -> str:
+    """The alert's kind: source plus title with its entities and numbers masked,
+    so "Failed login for alice" and "Failed login for bob" group together."""
+    masked = title
+    values = sorted((e.split(":", 1)[-1] for e in entities), key=len, reverse=True)
+    for value in values:
+        if value:
+            masked = re.sub(re.escape(value), "<entity>", masked, flags=re.I)
+    masked = _NUMBER.sub("<n>", _HEX.sub("<id>", _IP.sub("<ip>", masked)))
+    return f"{source}|{' '.join(masked.split())}"
+
+
+def signature_for(alert: Alert) -> str:
+    return signature_of(alert.source, alert.title, alert.entities)
+
+
+def miss_bound(clean_labels: int) -> Optional[float]:
+    """With this many clean labels and none wrong, the upper bound on how often
+    this signature is really a true positive, at 95% confidence."""
+    if clean_labels <= 0:
+        return None
+    return 1 - MISS_CONFIDENCE ** (1 / clean_labels)
+
+
+def build_baseline(
+    alerts: Iterable[Alert], outcomes: Iterable[Outcome], as_of: datetime
+) -> Baseline:
+    """Everything known strictly before ``as_of``. Later data never leaks in."""
+    signatures: Dict[str, SignatureBaseline] = {}
+    days: Dict[str, set] = defaultdict(set)
+    all_days = set()
+    seen = 0
+    for alert in alerts:
+        if alert.observed_at >= as_of:
+            continue
+        seen += 1
+        key = signature_for(alert)
+        row = signatures.setdefault(key, SignatureBaseline(signature=key))
+        row.count += 1
+        day = alert.observed_at.date()
+        days[key].add(day)
+        all_days.add(day)
+        row.first_seen = min(row.first_seen or alert.observed_at, alert.observed_at)
+        row.last_seen = max(row.last_seen or alert.observed_at, alert.observed_at)
+        row.entity_counts.update(alert.entities)
+    for key, row in signatures.items():
+        row.active_days = len(days[key])
+
+    for outcome in outcomes:
+        if outcome.closed_at >= as_of:
+            continue
+        row = signatures.setdefault(
+            outcome.signature, SignatureBaseline(signature=outcome.signature)
+        )
+        if outcome.disposition == TRUE_POSITIVE:
+            row.true_positive += 1
+            row.entity_true_positive.update(outcome.entities)
+        elif outcome.disposition in BENIGN_DISPOSITIONS:
+            row.benign += 1
+            row.entity_benign.update(outcome.entities)
+    return Baseline(
+        as_of=as_of,
+        signatures=signatures,
+        alerts_seen=seen,
+        days_covered=len(all_days),
+    )
+
+
+def _familiar(alert: Alert, row: SignatureBaseline) -> bool:
+    """Every entity on the alert has appeared on this signature before."""
+    if not alert.entities:
+        return row.count >= MIN_ENTITY_SIGHTINGS
+    return all(row.entity_counts[e] >= MIN_ENTITY_SIGHTINGS for e in alert.entities)
+
+
+@dataclass(frozen=True)
+class _Context:
+    alert: Alert
+    row: Optional[SignatureBaseline]
+    baseline: Baseline
+
+
+@dataclass(frozen=True)
+class _Rule:
+    name: str
+    outcome: Stage1
+    matches: Callable[[_Context], bool]
+    why: Callable[[_Context], str]
+
+
+def _bad_entities(c: _Context) -> FrozenSet[str]:
+    """Entities on this alert that were in a real incident of this same kind."""
+    if c.row is None:
+        return frozenset()
+    return frozenset(e for e in c.alert.entities if c.row.entity_true_positive[e])
+
+
+def _entities_clean(c: _Context) -> bool:
+    """Every entity has enough benign tickets on this kind of alert."""
+    return bool(c.alert.entities) and all(
+        c.row.entity_benign[e] >= MIN_CLEAN_LABELS for e in c.alert.entities
+    )
+
+
+# First match wins. Rules that add scrutiny run before any rule that removes it.
+RULES: Tuple[_Rule, ...] = (
+    _Rule(
+        "critical_source_severity",
+        Stage1.ESCALATE,
+        lambda c: c.alert.severity == "critical",
+        lambda c: "The source rated this critical.",
+    ),
+    _Rule(
+        "entity_true_positive_precedent",
+        Stage1.ESCALATE,
+        lambda c: bool(_bad_entities(c)),
+        lambda c: f"{', '.join(sorted(_bad_entities(c)))} was in a confirmed incident of this same kind.",
+    ),
+    _Rule(
+        "signature_mostly_true_positive",
+        Stage1.ESCALATE,
+        lambda c: bool(c.row)
+        and c.row.labelled >= MIN_CLEAN_LABELS
+        and c.row.true_positive * 2 >= c.row.labelled,
+        lambda c: f"{c.row.true_positive} of {c.row.labelled} past tickets of this kind were real.",
+    ),
+    _Rule(
+        "new_signature",
+        Stage1.ABSTAIN,
+        lambda c: c.row is None or c.row.count == 0,
+        lambda c: "Vigil has never seen this kind of alert in the history it has.",
+    ),
+    _Rule(
+        "clean_on_these_entities",
+        Stage1.DISMISS_CANDIDATE,
+        _entities_clean,
+        lambda c: f"These entities have {min(c.row.entity_benign[e] for e in c.alert.entities)} or more benign tickets on this kind of alert and no real ones.",
+    ),
+    _Rule(
+        "signature_has_true_positives",
+        Stage1.ABSTAIN,
+        lambda c: c.row.true_positive > 0,
+        lambda c: f"{c.row.true_positive} of {c.row.labelled} past tickets of this kind were real, so it needs judgment.",
+    ),
+    _Rule(
+        "strong_clean_ticket_history",
+        Stage1.DISMISS_CANDIDATE,
+        lambda c: c.row.benign >= MIN_STRONG_LABELS,
+        lambda c: f"{c.row.benign} past tickets of this kind closed benign and none real. Bounds the miss rate at {miss_bound(c.row.benign):.1%}.",
+    ),
+    _Rule(
+        "new_entity_on_signature",
+        Stage1.ABSTAIN,
+        lambda c: not _familiar(c.alert, c.row),
+        lambda c: "This kind of alert is known, but not on these users, hosts or addresses.",
+    ),
+    _Rule(
+        "clean_ticket_history",
+        Stage1.DISMISS_CANDIDATE,
+        lambda c: c.row.benign >= MIN_CLEAN_LABELS,
+        lambda c: f"{c.row.benign} past tickets closed benign and none real, on the same entities. Bounds the miss rate at {miss_bound(c.row.benign):.1%}.",
+    ),
+    _Rule(
+        "routine_recurring",
+        Stage1.DISMISS_CANDIDATE,
+        lambda c: c.row.active_days >= MIN_ROUTINE_ACTIVE_DAYS
+        and c.alert.severity in ROUTINE_SEVERITIES,
+        lambda c: f"Fired on {c.row.active_days} separate days on the same entities, with no tickets to confirm it.",
+    ),
+)
+
+
+def assess(alert: Alert, baseline: Baseline) -> Assessment:
+    context = _Context(alert, baseline.signatures.get(signature_for(alert)), baseline)
+    for rule in RULES:
+        if rule.matches(context):
+            return Assessment(rule.outcome, rule.name, (rule.why(context),))
+    return Assessment(
+        Stage1.ABSTAIN, "no_rule", ("Nothing in the history decides this.",)
+    )
