@@ -154,13 +154,13 @@ def has_disallowed_control_chars(text: str) -> bool:
 _TOOL_RESULT_OPEN = '<vigil:tool_result source="{source}" tool="{tool}">'
 _TOOL_RESULT_CLOSE = "</vigil:tool_result>"
 
-# Prompts wrap alert-sourced text in this element and tell the model the
+# Prompts wrap alert-sourced text in these elements and tell the model the
 # block is data. Whitespace and case don't make a different tag.
-_ALERT_DATA_TAG = re.compile(r"<\s*/?\s*alert_data\s*>", re.IGNORECASE)
+_ALERT_DATA_TAG = re.compile(r"<\s*/?\s*(?:alert_data|history)\s*>", re.IGNORECASE)
 
 
 def alert_text(value: object) -> str:
-    """Alert-sourced text with ``<alert_data>`` tags removed.
+    """Alert-sourced text with ``<alert_data>`` and ``<history>`` tags removed.
 
     Stripping repeats until the text is stable, so a value that rebuilds the
     tag out of its own pieces (``</alert</alert_data>_data>``) cannot close
