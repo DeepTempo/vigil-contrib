@@ -347,6 +347,7 @@ export default function CommandBar({
   const follow = useCallback((row: PaletteRow) => {
     if (row.dest === 'Recent' && row.recent) {
       setQuery(row.recent)
+      setHits(null)
       setOpen(true)
       setActive(null)
       return

@@ -1589,7 +1589,7 @@ export interface OverviewPayload {
   good_at: number
   fair_at: number
   agents: OverviewAgent[]
-  /** agents run on their own in the last 7 days, busiest first */
+  /** agents run on their own in the last 30 days, busiest first */
   standalone?: (OverviewAgent & { runs: number })[]
   feed: OverviewFeedItem[]
   feed_limit: number
