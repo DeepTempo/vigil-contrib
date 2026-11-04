@@ -135,6 +135,8 @@ export default function CommandBar({
     let live = true
     let meant = false
     let landed = ''
+    // Only this query's ranked rows are ever carried along, so a failed request cannot leave another query's.
+    let ranked: Found | null = null
     setSearching(q)
     // Rows moving under a cursor would send Enter somewhere else, so a change of rows puts
     // the cursor back on the first, as main's search does when it lands.
@@ -143,6 +145,7 @@ export default function CommandBar({
       const shape = JSON.stringify(groups?.groups ?? null)
       if (!groups || shape === landed) return
       landed = shape
+      ranked = groups
       setHits((held) => ({ ...(held ?? NO_HITS), found: groups }))
       setActive(null)
     }
@@ -156,9 +159,11 @@ export default function CommandBar({
       })
       void searchApi.query(q, round.signal).then((res) => {
         if (!live) return
-        setHits((held) => ({ ...res.data, found: held?.found ?? null }))
+        setHits({ ...res.data, found: ranked })
         setActive(null)
-      }).catch(() => {})
+      }).catch(() => {
+        if (live) setHits({ ...NO_HITS, found: ranked })
+      })
       void rankedSearch(q, round.signal).then((found) => {
         if (!live) return
         meant = true
