@@ -12,7 +12,7 @@ function ToolMark({ change }: { change: ToolChange | null | undefined }) {
   if (change === null) return null
   if (!change) return <span className="tp-mark none">Not connected</span>
   if (change === 'asks_first') return <span className="tp-mark asks_first">Asks you</span>
-  return <span className={`tp-mark ${change}`}>On its own</span>
+  return <span className={`tp-mark ${change}`}>On its own{change === 'on_its_own' && ' changes things'}</span>
 }
 
 function ToolIcon({ server, size = 14 }: { server: string; size?: number }) {
@@ -106,7 +106,7 @@ export default function ToolPicker({
     else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => Math.max(0, c - 1)) }
     else if (e.key === 'Enter') {
       e.preventDefault()
-      const t = flat[Math.min(cursor, flat.length - 1)]
+      const t = needle ? flat[Math.min(cursor, flat.length - 1)] : undefined
       if (t) toggle(t.name)
     } else if (e.key === 'Escape' && q) { e.stopPropagation(); setQ('') }
   }
