@@ -876,6 +876,16 @@ def test_sources_reports_the_assigned_model(client, analyst):
     assert body["model"] == {"provider": "ollama", "model": "nemotron"}
 
 
+def test_sources_reports_the_daemon(client, analyst):
+    class Processes:
+        async def read(self):
+            return {"agent_layer": "unknown", "daemon": "not_running", "medic": "off"}
+
+    with patch.object(client.app.state, "process_health", Processes()):
+        body = client.get(f"{BASE}/sources").json()
+    assert body["daemon"] == {"state": "not_running", "auto_triage": True}
+
+
 def test_latest_and_missing_runs(client, analyst):
     assert client.get(f"{BASE}/runs/latest").status_code == 404
     assert client.get(f"{BASE}/runs/nope").status_code == 404

@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ChangeEvent, type Dispatch, type ReactNode } from 'react'
 import {
   coldStartApi,
+  type ColdStartDaemonState,
   type ColdStartGroup,
   type ColdStartRun,
   type ColdStartRunRequest,
@@ -16,6 +17,7 @@ import './coldstart.css'
 const HISTORY_DAYS = [7, 14, 30, 60, 90]
 const DEFAULT_HISTORY_DAYS = 60
 const POLL_MS = 2000
+const SOURCES_POLL_MS = 15_000
 const ALERT_FILE_TYPES = '.json,.jsonl,.csv,.parquet'
 const TICKET_FILE_TYPES = '.json,.jsonl,.csv'
 
@@ -100,6 +102,21 @@ const keptAndDropped = (noun: string, kept: number, dropped: Record<string, numb
   return `Kept ${plural(kept, noun)}.${total ? ` Dropped ${n(total)}: ${dropReasons(dropped)}.` : ''}`
 }
 
+const RUN_DAEMON = 'Run it with ./start.sh -d or the compose daemon profile.'
+
+const DAEMON_GAP: Record<Exclude<ColdStartDaemonState, 'running'>, string> = {
+  not_running: 'The SOC daemon is not running, so nothing is polled or triaged, and the baseline is unused until it starts.',
+  unhealthy: 'The SOC daemon is not healthy, so new alerts may not be polled or triaged, and the baseline may go unused until it recovers.',
+  unknown: 'Vigil could not read the state of the SOC daemon, so new alerts may not be polled or triaged, and the baseline may go unused.',
+}
+
+/** What still keeps new alerts from being triaged, which is the only time the baseline is read. */
+const triageGaps = ({ daemon, model }: ColdStartSources): string[] => [
+  ...(daemon.state === 'running' ? [] : [`${DAEMON_GAP[daemon.state]} ${RUN_DAEMON}`]),
+  ...(daemon.auto_triage ? [] : ['Auto-triage is off (DAEMON_AUTO_TRIAGE), so new alerts are not triaged and the baseline is unused until it is on.']),
+  ...(model ? [] : ['No model is assigned to triage, so new alerts are not triaged and the baseline is unused until one is.']),
+]
+
 // An upper bound rounds up, so the wording never understates the risk.
 const missBoundWords = (bound: number) => `at most ${(Math.ceil(bound * 1000 - 1e-9) / 10).toFixed(1)}% real, 95% confidence`
 
@@ -166,6 +183,22 @@ type Load =
   | { at: 'failed'; message: string }
   | { at: 'ready'; sources: ColdStartSources; latest: ColdStartRun | null }
 
+/** The daemon can start while this page is open, and what the page says about it must follow. */
+function useFreshSources(first: ColdStartSources): ColdStartSources {
+  const [sources, setSources] = useState(first)
+  useEffect(() => {
+    let live = true
+    const id = window.setInterval(() => {
+      coldStartApi.sources().then(({ data }) => live && setSources(data)).catch(() => undefined)
+    }, SOURCES_POLL_MS)
+    return () => {
+      live = false
+      window.clearInterval(id)
+    }
+  }, [])
+  return sources
+}
+
 /** Day one: a baseline from the alert history the customer already has. Every figure comes from the API. */
 export default function StartScreen({ go, goSettings }: ConsoleScreenProps) {
   const [load, setLoad] = useState<Load>({ at: 'loading' })
@@ -203,7 +236,8 @@ export default function StartScreen({ go, goSettings }: ConsoleScreenProps) {
   return <ColdStartFlow sources={load.sources} latest={load.latest} go={go} goSettings={goSettings} />
 }
 
-function ColdStartFlow({ sources, latest, go, goSettings }: Nav & { sources: ColdStartSources; latest: ColdStartRun | null }) {
+function ColdStartFlow({ sources: firstSources, latest, go, goSettings }: Nav & { sources: ColdStartSources; latest: ColdStartRun | null }) {
+  const sources = useFreshSources(firstSources)
   const [flow, dispatch] = useReducer(reduceFlow, latest, (run): Flow => (run ? flowOf(run) : { step: 'connect' }))
   const [notice, setNotice] = useState<string | null>(null)
   const request = useRequest()
@@ -367,7 +401,12 @@ function Stat({ value, label, children }: { value: ReactNode; label: string; chi
   )
 }
 
-function Readiness({ sources: { model, loglm }, goSettings }: Pick<Nav, 'goSettings'> & { sources: ColdStartSources }) {
+const daemonWords = ({ state, auto_triage }: ColdStartSources['daemon']) => {
+  if (state !== 'running') return `${DAEMON_GAP[state]} ${RUN_DAEMON}`
+  return auto_triage ? 'Running' : 'Running, but auto-triage is off (DAEMON_AUTO_TRIAGE), so new alerts are not triaged'
+}
+
+function Readiness({ sources: { model, loglm, daemon }, goSettings }: Pick<Nav, 'goSettings'> & { sources: ColdStartSources }) {
   return (
     <dl className="cs-kv" aria-label="Readiness">
       <dt>Model</dt>
@@ -380,6 +419,11 @@ function Readiness({ sources: { model, loglm }, goSettings }: Pick<Nav, 'goSetti
       <dd>
         <span className={`cs-dot${loglm.connected ? '' : ' off'}`} />
         {loglm.connected ? 'Connected' : 'Not connected: flow scoring is off, everything else works'}
+      </dd>
+      <dt>Daemon</dt>
+      <dd>
+        <span className={`cs-dot${daemon.state === 'running' && daemon.auto_triage ? '' : ' off'}`} />
+        {daemonWords(daemon)}
       </dd>
     </dl>
   )
@@ -689,17 +733,19 @@ function AddTickets({ run, onAdded }: { run: ColdStartRun; onAdded: (added: Adde
 function liveEffects(run: ColdStartRun, sources: ColdStartSources, goSettings: Nav['goSettings']): ReactNode[] {
   const source = sourceFor(sources, run.source)
   const { alerts_read, days_covered, tickets_kept } = run.counts
+  const gaps = triageGaps(sources)
+  const baseline = `The baseline from ${plural(alerts_read, 'alert')} over ${plural(days_covered, 'day')}${tickets_kept ? ` and ${plural(tickets_kept, 'closed ticket')}` : ''}`
   const connect = <button type="button" className="cs-link" onClick={() => goSettings('integrations')}>Connect a source in Settings</button>
   const sourceLine = {
-    federation: `${source.label} is enabled from now. Vigil reads new alerts from it as they arrive.`,
+    federation: `${source.label} is enabled from now.${sources.daemon.state === 'running' ? ' Vigil reads new alerts from it as they arrive.' : ''}`,
     sample: <>Sample history is synthetic, so it cannot go live. {connect} and build a baseline from your own alerts.</>,
     upload: <>An uploaded file does not send new alerts. {connect} to read them.</>,
   }[source.kind]
   return [
     sourceLine,
-    `The baseline from ${plural(alerts_read, 'alert')} over ${plural(days_covered, 'day')}${tickets_kept ? ` and ${plural(tickets_kept, 'closed ticket')}` : ''} is active on new alerts.`,
+    gaps.length ? `${baseline} is saved.` : `${baseline} is shown to people beside the verdict on new alerts. The model does not see it.`,
+    ...gaps,
     'Vigil recommends and a person decides. Nothing closes on its own.',
-    ...(sources.model ? [] : ['No model is assigned, so alerts it would judge wait for a person.']),
   ]
 }
 
@@ -727,7 +773,7 @@ function GoLive({ run, sources, goSettings, onBack, onRun }: Pick<Nav, 'goSettin
 function Live({ run, sources, go, goSettings }: Nav & { run: ColdStartRun; sources: ColdStartSources }) {
   return (
     <div className="cs-card" style={{ display: 'grid', gap: 12, maxWidth: 720 }}>
-      <h2>Vigil is live</h2>
+      <h2>{triageGaps(sources).length ? 'Marked live, but new alerts may not be triaged' : 'The baseline is live'}</h2>
       <Effects items={liveEffects(run, sources, goSettings)} />
       <div className="cs-row">
         <button type="button" className="btn primary" onClick={() => go('overview')}>Open Overview</button>

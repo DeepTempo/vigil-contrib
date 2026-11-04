@@ -801,7 +801,10 @@ export interface ColdStartSources {
   sources: ColdStartSource[]
   model: { provider: string; model: string } | null
   loglm: { connected: boolean }
+  daemon: { state: ColdStartDaemonState; auto_triage: boolean }
 }
+
+export type ColdStartDaemonState = 'running' | 'unhealthy' | 'not_running' | 'unknown'
 
 export type ColdStartRunStatus = 'collecting' | 'judging' | 'ready' | 'live' | 'failed'
 

@@ -1,7 +1,8 @@
 """Day-one cold start: compute a baseline from history the customer already has.
 
 A run is a dry run. Its alerts and tickets stay in the cold start tables, and going
-live feeds its baseline to triage as evidence. Nothing here closes an alert.
+live shows its baseline to people beside each triage verdict. The model never sees it,
+and nothing here closes an alert.
 """
 
 import hashlib
@@ -17,9 +18,11 @@ from core.auth.current_user import get_current_user
 from core.auth.permissions import deny_unless, permission_gate
 from core.coldstart import collect, runner, store, tickets
 from core.coldstart.sample_history import FIXTURE, SAMPLE_SOURCE
-from core.config import load_integrations_config
+from core.config import get_settings, load_integrations_config
+from core.deps import provide_process_health
 from core.federation import registry
 from core.llm.target import resolve_dispatch
+from core.platform.process_health import ProcessHealth
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 from core.storage.models.cold_start import InvalidTransition, RunStatus
@@ -136,11 +139,19 @@ def _loglm_status() -> Dict[str, bool]:
 
 
 @router.get("/sources")
-async def list_sources() -> Dict[str, Any]:
+async def list_sources(
+    processes: ProcessHealth = Depends(provide_process_health),
+) -> Dict[str, Any]:
+    """``daemon`` is here because the daemon is the only reader of a live baseline, and
+    GET /api/processes needs platform.read, which going live does not."""
     return {
         "sources": await run_in_threadpool(_sources),
         "model": await run_in_threadpool(_triage_model),
         "loglm": await run_in_threadpool(_loglm_status),
+        "daemon": {
+            "state": (await processes.read())["daemon"],
+            "auto_triage": get_settings().daemon_auto_triage,
+        },
     }
 
 
