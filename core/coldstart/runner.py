@@ -24,7 +24,7 @@ from core.coldstart.baseline import (
     parse_time,
     signature_for,
 )
-from core.coldstart.judge import build_prompt, evidence_lines, parse_verdict
+from core.coldstart.judge import build_prompt, parse_verdict
 from core.coldstart.sample_history import SAMPLE_SOURCE, load_sample
 from core.coldstart.tickets import Ticket, filter_tickets, outcomes_from
 from core.federation import registry
@@ -160,7 +160,6 @@ def pick_for_judging(
 
 async def _judge(run_id: str) -> None:
     params = await asyncio.to_thread(store.run_params, run_id)
-    baseline = Baseline.from_dict(params.baseline)
     chosen = pick_for_judging(
         await asyncio.to_thread(store.judge_candidates, run_id), params.judge_limit
     )
@@ -177,9 +176,7 @@ async def _judge(run_id: str) -> None:
         if candidate.judged:
             continue
         alert = candidate.alert
-        prompt = build_prompt(
-            alert, candidate.description, evidence_lines(alert, baseline)
-        )
+        prompt = build_prompt(alert, candidate.description)
         started = time.monotonic()
         try:
             reply = await asyncio.wait_for(

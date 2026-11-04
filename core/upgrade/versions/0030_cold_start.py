@@ -2,8 +2,8 @@
 
 from core.upgrade.revision import run_sql
 
-revision = "0029_cold_start"
-down_revision = "0028_detection_rule_origin"
+revision = "0030_cold_start"
+down_revision = "0029_detection_rule_stages"
 
 
 def upgrade() -> None:
