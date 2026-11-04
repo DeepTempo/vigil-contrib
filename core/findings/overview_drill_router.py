@@ -13,7 +13,7 @@ and not cases gets those and no case.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,7 +26,7 @@ from core.findings.alert_outcomes import (
     TERMINAL_LABELS,
     terminal_states_today,
 )
-from core.findings.overview import CASE_STATES
+from core.findings.overview import CASE_STATES, RATE_WINDOW
 from core.routing import Auth, RouterMeta
 from core.storage.connection import get_db_manager
 from core.storage.models import Case, Finding, User, WorkflowRun
@@ -51,7 +51,6 @@ EXPLAIN = {
     "scoring": "Today's alerts queued for triage that have not been scored yet.",
     "waiting": "Today's alerts that are not in a case, not queued for triage and not dropped.",
 }
-RUN_WINDOW = timedelta(days=30)
 RECENT_RUNS = 12
 
 
@@ -198,7 +197,7 @@ def agent_detail(
             status_code=404, detail=f"Workflow not found: {workflow_id}"
         )
     can_read_cases = _can_read_cases(user)
-    since = utcnow().replace(tzinfo=None) - RUN_WINDOW
+    since = utcnow().replace(tzinfo=None) - RATE_WINDOW
     db = get_db_manager()
     with db.session_scope() as session:
         base = session.query(WorkflowRun, RATED_STATUS).filter(
@@ -216,15 +215,18 @@ def agent_detail(
             .limit(RECENT_RUNS)
             .all()
         )
+        # The runs the board's rate and level read, hidden ones included (RATE_INFO), so
+        # hiding a failure cannot show a clean rate beside a poor pill.
         window = (
-            base.filter(
-                WorkflowRun.started_at >= since,
-                WorkflowRun.status.in_(("completed", "failed", "cancelled")),
-            )
-            .with_entities(
+            session.query(
                 RATED_STATUS,
                 WorkflowRun.duration_ms,
                 WorkflowRun.total_cost_usd,
+            )
+            .filter(
+                WorkflowRun.workflow_id == workflow_id,
+                WorkflowRun.started_at >= since,
+                WorkflowRun.status.in_(("completed", "failed", "cancelled")),
             )
             .all()
         )
@@ -240,7 +242,7 @@ def agent_detail(
         "live": live_rows,
         "recent": recent_rows,
         "record": {
-            "days": RUN_WINDOW.days,
+            "days": RATE_WINDOW.days,
             "runs": ended + tally.get("rejected", 0),
             "completed": tally.get("completed", 0),
             "failed": tally.get("failed", 0),

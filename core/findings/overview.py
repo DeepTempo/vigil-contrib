@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 
 FEED_LIMIT = 50
 RATE_WINDOW = timedelta(days=30)
-# Agents run on their own ("Run on an alert") are listed over the week, as the catalog counts runs.
-STANDALONE_WINDOW = timedelta(days=7)
 GOOD_AT = 0.95
 FAIR_AT = 0.85
 # budget_exhausted and data_starved are stored as completed (core/workflows/run_bridge_router.py).
@@ -365,8 +363,9 @@ def overview_alert(finding_id: str) -> Optional[dict]:
 
 
 def _standalone_rows(now: datetime) -> list[dict]:
-    """Agents with runs of their own in the last 7 days, in the agent cards' shape plus ``runs``."""
-    since = now - STANDALONE_WINDOW
+    """Agents with runs of their own, in the agent cards' shape plus ``runs``. The same runs
+    and window as a workflow's card, so its drill reads the same numbers."""
+    since = now - RATE_WINDOW
     db = get_db_manager()
     with db.session_scope() as session:
         rows = (
@@ -378,7 +377,6 @@ def _standalone_rows(now: datetime) -> list[dict]:
             .filter(
                 WorkflowRun.workflow_id.like(f"{AGENT_RUN_PREFIX}%"),
                 WorkflowRun.started_at >= since,
-                WorkflowRun.deleted_at.is_(None),
             )
             .all()
         )

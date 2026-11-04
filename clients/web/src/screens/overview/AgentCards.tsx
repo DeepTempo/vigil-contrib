@@ -111,7 +111,7 @@ export default function AgentCards({
       )}
       {(data.standalone ?? []).length > 0 && (
         <div className="ov-standalone" role="list" aria-label="Agents run on their own">
-          <span className="ov-standalone-t">Agents run on their own, last 7 days</span>
+          <span className="ov-standalone-t">Agents run on their own, last 30 days</span>
           {data.standalone!.map((a) => (
             <button key={a.workflow_id} type="button" role="listitem" className="ov-standalone-a" onClick={() => onOpen?.(a)} aria-label={`${a.name}: show its runs`}>
               <b>{a.name}</b>
