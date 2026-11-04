@@ -58,6 +58,7 @@ from core.storage.models.detection_rule import (
     DetectionRuleCheckChange,
     DetectionRuleStage,
     DetectionRuleVersion,
+    SiemSearch,
 )
 from core.storage.models.episodic import (
     EpisodicDistilFailure,
@@ -149,6 +150,7 @@ __all__ = [
     "LLMProviderConfig",
     "McpCredential",
     "Principal",
+    "SiemSearch",
     "SignIn",
     "MedicLastSeen",
     "Role",

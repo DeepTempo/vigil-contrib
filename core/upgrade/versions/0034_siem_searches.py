@@ -1,8 +1,8 @@
-"""Day-one cold start: a run, its alert snapshots and its filtered tickets."""
+"""The SIEM search budget, shared by every Vigil process (#3741)."""
 
 from core.upgrade.revision import run_sql
 
-revision = "0034_cold_start"
+revision = "0034_siem_searches"
 down_revision = "0033_detection_rule_known_name"
 
 
