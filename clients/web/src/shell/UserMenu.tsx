@@ -107,6 +107,7 @@ export default function UserMenu({
 
   const handleLogout = async () => {
     setOpen(false)
+    if (!leaveUnsaved()) return
     await logout()
     navigate('/login')
   }
