@@ -11,7 +11,7 @@ import {
   IN_FLIGHT, callFailure, callLine, fmtDuration, moveWord, shownStatus, useInvestigateReplay,
   type CallFailure, type HuntView, type InvestigateDecisionView, type RootCauseBudgets, type RootCauseEntry, type WfRunDetail,
 } from './runRead'
-import { Heading, HuntPanels, InvestigatePanels, OtherPanels, PlaybookReport, Prose, RootCausePanels } from './WatchPanels'
+import { Heading, HuntPanels, InvestigatePanels, OtherPanels, PlaybookPanels, PlaybookReport, Prose, RootCausePanels } from './WatchPanels'
 
 /** What each kind of run is reduced to: one row per decision. `calls` is null when
  *  the record cannot say which calls followed (an older agent service). */
@@ -46,12 +46,12 @@ const HUNT_LIKE_RUN_KINDS = ['hunt', 'adjudicate']
 export const STEP_MS = 1400
 export const UNSUPPORTED = 'Replay isn’t available for this kind of run yet.'
 export const AGENT_RUN = 'One agent works this on its own, with its own tools. Its report appears here when it finishes.'
-export const PLAYBOOK = 'A playbook runs its phases in order, with no lead agent to watch. Its phases are listed in History.'
+export const PLAYBOOK = 'A playbook runs its steps in order, one agent each, with no lead agent to watch. Each step’s report is in History.'
 
 
-/** `threat-hunt` → "Threat hunt". The definition carries no display name, so the id is read as words. */
+/** `threat-hunt` → "Threat hunt". A built-in carries its id as its name, so an id is read as words; a name with spaces is kept. */
 const workflowTitle = (name: string) => {
-  const words = name.replace(/[_-]+/g, ' ').trim()
+  const words = /\s/.test(name.trim()) ? name.trim() : name.replace(/[_-]+/g, ' ').trim()
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
@@ -633,8 +633,8 @@ export function WatchRun({ d, onBack }: { d: WfRunDetail; onBack: () => void }) 
         <>
           <OneLine>{d.workflow_id?.startsWith('agent-run-') ? AGENT_RUN : PLAYBOOK}</OneLine>
           <WaitingOnPerson d={d} />
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3.5 items-start">{d.phases?.length ? <PlaybookPanels d={d} /> : <OtherPanels d={d} />}</div>
           <PlaybookReport d={d} />
-          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3.5 items-start"><OtherPanels d={d} /></div>
         </>
       )}
     </div>

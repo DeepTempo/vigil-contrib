@@ -620,3 +620,18 @@ export function verdictOf(d: WfRunDetail, rootCauseReason: string | null): { dis
   }
   return { disposition, headline }
 }
+
+/** A step's report as Markdown. A report field already comes in lines; an older run's
+ *  summary may hold its bullets on one line ("Verdict … - Checked … - Checked … Next: …"),
+ *  and those are put on their own lines. Either way the Next line stands apart from the
+ *  last bullet, which Markdown would otherwise run it into. */
+export function reportLines(text: string): string {
+  return text
+    .split('\n')
+    // two or more, so a single spaced dash in a sentence stays a dash
+    .map((line) => ((line.match(/ - \S/g) ?? []).length >= 2 && !line.trimStart().startsWith('- ')
+      ? line.replace(/\s+-\s+(?=\S)/g, '\n- ').replace('\n- ', '\n\n- ').replace(/\s+Next:\s*/, '\n\nNext: ')
+      : line))
+    .join('\n')
+    .replace(/\n+(Next:)/g, '\n\n$1')
+}

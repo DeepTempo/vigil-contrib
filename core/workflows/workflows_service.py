@@ -375,10 +375,21 @@ def _agent_run_definition(workflow_id: str) -> Optional[WorkflowDefinition]:
                     "id": "agent",
                     "agent": agent.id,
                     "name": agent.name,
+                    # the report field is what a person reads in Watch it run;
+                    # summary stays one line for the run lists
                     "instructions": (
                         f"Work the alert or case you were given as {agent.name}, and "
-                        "say what you conclude.\n\nExpected output: a verdict with the "
-                        "evidence for it, and what a person should do next."
+                        "write an analyst's report in your answer's report field: a "
+                        "verdict line, then '- ' evidence bullets, then a 'Next:' line, "
+                        "each on its own line.\n\n"
+                        "In report, line 1: what the alert is, and your verdict "
+                        "(malicious, suspicious or benign) with your confidence.\n"
+                        "Then 3 to 6 lines starting with '- ', each saying what you "
+                        "checked, what you found, and which tool showed it.\n"
+                        "Last line: 'Next:' and what a person should do. Separate the "
+                        "lines with newlines.\n"
+                        "Keep summary to the verdict line alone; details is not shown "
+                        "to the reader."
                     ),
                     "tools": list(agent.recommended_tools or []),
                 }

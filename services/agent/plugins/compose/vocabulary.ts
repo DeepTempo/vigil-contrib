@@ -18,6 +18,9 @@ export const PHASE_SCHEMA: Record<string, unknown> = {
     // Written for the next step rather than for a reader: the steps after this
     // one are given it, and a summary addressed to nobody gets ignored by both.
     handoff: { type: "string" },
+    // Optional: the step's report for a person, several lines (a verdict, evidence
+    // bullets, a next step). A step that writes one is shown by it; else its summary.
+    report: { type: "string" },
     details: { type: "object" },
     citations: { type: "array", items: { type: "string" } },
   },
@@ -26,8 +29,14 @@ export const PHASE_SCHEMA: Record<string, unknown> = {
 export interface PhaseAnswer {
   summary: string;
   handoff: string;
+  report?: string;
   details?: Record<string, unknown>;
   citations?: string[];
+}
+
+// What a reader is shown for a step: its report when it wrote one, else its summary.
+export function reportOf(answer: PhaseAnswer): string {
+  return typeof answer.report === "string" && answer.report.trim() ? answer.report.trim() : answer.summary;
 }
 
 // One completed step. answer is kept whole so a later fold can render the report

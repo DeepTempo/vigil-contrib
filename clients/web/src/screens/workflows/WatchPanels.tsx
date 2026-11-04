@@ -7,7 +7,8 @@ import { Cost, fmtCost } from '../../shared/cost'
 import { Markdown } from '../../shared/Markdown'
 import { explanationColor, explanationWord, wordDisplay } from '../cases/caseFold'
 import { OpenCheckpoint, bearings, liveGap, provenanceTag } from './huntParts'
-import type { HuntEvidence, HuntStanding, HuntView, RootCauseBudgets, RootCauseEntry, WfRunDetail } from './runRead'
+import { PHASE_WORD, fmtDuration, reportLines, shownPhaseStatus, type HuntEvidence, type HuntStanding, type HuntView, type RootCauseBudgets, type RootCauseEntry, type WfRunDetail } from './runRead'
+import { useAgentMeta } from './useWorkflowsData'
 
 export function Heading({ children }: { children: ReactNode }) {
   return <span className="text-[12px] font-semibold leading-[1.3] text-[var(--tx2)]">{children}</span>
@@ -369,6 +370,36 @@ export function InvestigatePanels({ d, costs, at }: { d: WfRunDetail; costs: num
   )
 }
 
+/** A playbook's steps in order, each with its agent, where it stands and how long it took; then what it could not reach. */
+export function PlaybookPanels({ d }: { d: WfRunDetail }) {
+  const agentMeta = useAgentMeta()
+  const phases = [...(d.phases ?? [])].sort((a, b) => a.phase_order - b.phase_order)
+  const view = (d.projection ?? {}) as { unbound?: unknown }
+  return (
+    <>
+      <div className="flex flex-col gap-2 min-w-0">
+        <Heading>Steps</Heading>
+        {phases.length === 0 ? <NoData>No step has started yet.</NoData> : (
+          <Note>
+            {phases.map((p) => (
+              <span key={p.phase_id} className="flex items-baseline gap-2" data-phase={p.phase_id} data-phase-status={shownPhaseStatus(p)}>
+                <span className="text-[var(--tx2)] tabular-nums">{p.phase_order}</span>
+                <span className="grow min-w-0 break-words">{agentMeta(p.agent_id).label}</span>
+                <span className="shrink-0 font-semibold">{PHASE_WORD[shownPhaseStatus(p)] ?? p.status}</span>
+                <span className="shrink-0 w-[44px] text-right text-[var(--tx2)] tabular-nums">{p.duration_ms ? fmtDuration(p.duration_ms) : '—'}</span>
+              </span>
+            ))}
+          </Note>
+        )}
+      </div>
+      <div className="flex flex-col gap-2.5 min-w-0">
+        <Heading>Blind spots hit</Heading>
+        <Spots lines={unboundLines(view.unbound)} empty="None so far." />
+      </div>
+    </>
+  )
+}
+
 /** A playbook run's answer, as its agent wrote it. No replay exists for this kind, so this is the whole of what it found. */
 export function PlaybookReport({ d }: { d: WfRunDetail }) {
   const details = (d.phases ?? []).flatMap((p) => (p.output?.details && Object.keys(p.output.details).length > 0 ? [{ id: p.phase_id, details: p.output.details }] : []))
@@ -377,7 +408,7 @@ export function PlaybookReport({ d }: { d: WfRunDetail }) {
     <div className="flex flex-col gap-2 min-w-0">
       <Heading>Report · model text</Heading>
       <div className={`flex flex-col gap-2.5 text-[12.5px] leading-[1.55] text-[var(--tx1)] px-3 py-2.5 ${CARD}`}>
-        {d.result_summary && <Markdown>{d.result_summary}</Markdown>}
+        {d.result_summary && <Markdown>{reportLines(d.result_summary)}</Markdown>}
         {details.map((phase) => (
           <pre key={phase.id} className="m-0 font-mono text-[11.5px] leading-[1.5] whitespace-pre-wrap break-words text-[var(--tx2)]">{JSON.stringify(phase.details, null, 2)}</pre>
         ))}

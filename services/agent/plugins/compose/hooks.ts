@@ -5,7 +5,7 @@ import type { Outcome } from "../../core/loop.js";
 import type { State } from "../../core/seams.js";
 import type { PhaseSpec, RunSpec } from "../../core/spec.js";
 import type { Mirror, PhaseUpdate } from "./mirror.js";
-import { PHASE_APPROVAL, PHASE_SCHEMA, type ComposeKinds, type PhaseAnswer, type PhasePayload } from "./vocabulary.js";
+import { PHASE_APPROVAL, PHASE_SCHEMA, reportOf, type ComposeKinds, type PhaseAnswer, type PhasePayload } from "./vocabulary.js";
 
 // The compose plugin's code: the playbook decided the order, so this walks it.
 // No step is skipped, reordered or repeated, and no decision is taken here.
@@ -240,5 +240,5 @@ function brief(spec: RunSpec, answers: readonly PhasePayload[]): string {
 
 // The run's result as one document: what each step handed on, in playbook order.
 function summarise(answers: readonly PhasePayload[]): string {
-  return answers.map((answer) => `### ${answer.name}\n${answer.answer.summary}`).join("\n\n");
+  return answers.map((answer) => `### ${answer.name}\n${reportOf(answer.answer)}`).join("\n\n");
 }
