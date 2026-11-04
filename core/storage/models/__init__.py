@@ -55,6 +55,7 @@ from core.storage.models.detection_rule import (
     DETECTION_RULE_STAGES,
     DETECTION_RULE_STATUSES,
     DetectionRule,
+    DetectionRuleCheckChange,
     DetectionRuleStage,
     DetectionRuleVersion,
 )
@@ -119,6 +120,7 @@ __all__ = [
     "DETECTION_RULE_STAGES",
     "DETECTION_RULE_STATUSES",
     "DetectionRule",
+    "DetectionRuleCheckChange",
     "DetectionRuleStage",
     "DetectionRuleVersion",
     "EpisodicDistilFailure",

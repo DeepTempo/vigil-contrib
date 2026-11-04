@@ -1,5 +1,8 @@
 """Sees: whether the data each active Kibana rule reads is arriving.
 
+Wazuh rules get theirs from ``wazuh_sees``, which writes through ``_write``;
+Splunk rules get none yet.
+
 A rule's data source is its ``index`` patterns (or its data view's) and the
 timestamp field its 7-day range runs on. Rules on one source share one search:
 a size-0 ``_search`` that stops at the first event, the only call counted
@@ -204,12 +207,25 @@ def _active_rules() -> List[Tuple[RuleKey, Mapping[str, Any]]]:
     return [((rid, ver), content or {}) for rid, ver, content in rows]
 
 
-def _write(results: Dict[RuleKey, Dict[str, Any]]) -> int:
-    """Store each result that differs from the version's stored Sees; runs is kept."""
+def _write(results: Dict[RuleKey, Dict[str, Any]], source: str = kibana.SOURCE) -> int:
+    """Store each result that differs from the version's stored Sees; runs is kept.
+
+    ``source`` is the rules' (Kibana's, or Wazuh's for ``wazuh_sees``).
+    A result or reason that differs from the rule's last recorded Sees, across
+    versions, is also appended to detection_rule_check_changes.
+    """
+    from core.detections.inventory.sync import (
+        _change,
+        _last_results,
+        _record_changes,
+    )
+
     if not results:
         return 0
     now = datetime.now(timezone.utc).isoformat()
     with get_db_manager().session_scope() as session:
+        last = _last_results(session, source)
+        changes = []
         rows = session.execute(
             select(
                 DetectionRuleVersion.rule_id,
@@ -224,6 +240,12 @@ def _write(results: Dict[RuleKey, Dict[str, Any]]) -> int:
         changed = []
         for rid, ver, checks in rows:
             new, old = results[(rid, ver)], (checks or {}).get("sees") or {}
+            seen = (new["result"], new["reason"])
+            before = last.get((rid, "sees"))
+            if before != seen:
+                changes.append(
+                    _change(rid, ver, "sees", before[0] if before else None, *seen)
+                )
             if all(old.get(k) == v for k, v in new.items()):
                 continue
             changed.append(
@@ -246,6 +268,7 @@ def _write(results: Dict[RuleKey, Dict[str, Any]]) -> int:
                 .values(checks=bindparam("new_checks")),
                 changed,
             )
+        _record_changes(session, changes, now)
     return len(changed)
 
 
