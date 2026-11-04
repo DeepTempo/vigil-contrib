@@ -599,14 +599,16 @@ function Header({ d, hypothesis, tail, onBack }: { d: WfRunDetail; hypothesis: s
   )
 }
 
-/** A playbook run has no replay to raise this in, so its wait for a person is said here. The decision is on the case. */
+/** A playbook run has no replay to raise this in, so its wait for a person is said here. This view has no approve or reject. */
 function WaitingOnPerson({ d }: { d: WfRunDetail }) {
   const open = (d.projection as { open_checkpoint?: { question?: string } | null } | null | undefined)?.open_checkpoint
-  if (!open) return null
+  const gated = (d.phases ?? []).some((p) => p.status === 'pending_approval')
+  if (!open && !gated) return null
   const caseId = d.trigger_context?.case_id
   return (
     <OneLine>
-      Stopped · needs you. {open.question}{' '}
+      Stopped · needs you. {open?.question}{' '}
+      {gated && <>Approve or reject it in <Link className="underline" to={`/workflows?workflow=${encodeURIComponent(d.workflow_id ?? '')}`}>this workflow’s History</Link>.{' '}</>}
       {typeof caseId === 'string' && caseId && <Link className="underline" to={`/cases?case=${encodeURIComponent(caseId)}`}>Decide on the case</Link>}
     </OneLine>
   )
