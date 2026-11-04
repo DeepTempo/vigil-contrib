@@ -10,7 +10,6 @@ from redis.exceptions import RedisError
 
 from core.coldstart import active
 from core.coldstart.baseline import Assessment, alert_from_finding, assess
-from core.coldstart.judge import evidence_lines, history_block
 from core.findings.exclusions import cached_active_ips, excluded_ips_of
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
@@ -703,9 +702,7 @@ class FindingProcessor:
             precedent = await self._baseline_precedent(finding)
 
             # Build triage prompt
-            prompt = self._build_triage_prompt(
-                finding, precedent[0] if precedent else None
-            )
+            prompt = self._build_triage_prompt(finding)
 
             # The gateway gives up at triage_timeout only if no worker has
             # started the call; a started one is still answering. This bound
@@ -722,9 +719,9 @@ class FindingProcessor:
                     self.stats["triaged"] += 1
                     if precedent:
                         finding["ai_triage"]["baseline"] = {
-                            "stage1": precedent[1].stage1.value,
-                            "rule": precedent[1].rule,
-                            "reasons": list(precedent[1].reasons),
+                            "stage1": precedent.stage1.value,
+                            "rule": precedent.rule,
+                            "reasons": list(precedent.reasons),
                         }
             else:
                 finding["ai_triage_error"] = error or "empty LLM response"
@@ -744,23 +741,20 @@ class FindingProcessor:
 
     async def _baseline_precedent(
         self, finding: Dict[str, Any]
-    ) -> Optional[Tuple[List[str], Assessment]]:
+    ) -> Optional[Assessment]:
         """What the live cold start baseline says about this finding, if there is one.
-        It informs the model. It never closes or dismisses anything. A known-answer
-        probe stays out: it tests the model on a fixed prompt."""
+        It is stored for a person and never reaches the model: on synthetic alerts it
+        made the model stand down on real attacks. It closes nothing."""
         if finding.get("data_source") == PROBE_DATA_SOURCE:
             return None
         baseline = await asyncio.to_thread(active.live_baseline)
         alert = alert_from_finding(finding) if baseline else None
         if alert is None:
             return None
-        return evidence_lines(alert, baseline), assess(alert, baseline)
+        return assess(alert, baseline)
 
-    def _build_triage_prompt(
-        self, finding: Dict[str, Any], evidence: Optional[List[str]] = None
-    ) -> str:
+    def _build_triage_prompt(self, finding: Dict[str, Any]) -> str:
         """Build prompt for AI triage."""
-        history = history_block(evidence) if evidence else ""
         entity_context = finding.get("entity_context") or {}
         mitre = finding.get("mitre_predictions") or {}
         desc = finding.get("description") or "N/A"
@@ -795,7 +789,7 @@ Entity Context:
 - Users: {alert_text(users)}
 MITRE Predictions: {predictions}
 </alert_data>
-{history}
+
 Provide your assessment in the following format:
 SEVERITY: [critical/high/medium/low]
 CONFIDENCE: [0.0-1.0]

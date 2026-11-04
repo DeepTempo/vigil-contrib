@@ -235,7 +235,7 @@ def test_judging_takes_at_most_three_of_a_kind_up_to_the_limit(client, analyst):
     assert run["counts"]["average_model_seconds"] is not None
     assert complete.await_args.kwargs["component"] == "triage"
     prompt = complete.await_args.kwargs["message"]
-    assert "<history>" in prompt and "<alert_data>" in prompt
+    assert "<history>" not in prompt and "<alert_data>" in prompt
 
 
 def test_the_prompt_gets_the_alert_description(client, analyst):
@@ -270,7 +270,7 @@ def test_judging_reaches_the_assigned_provider_through_the_real_oneshot(
     assert dispatch.await_count == run["counts"]["judged"] == 2
     kwargs = dispatch.await_args.kwargs
     assert kwargs["provider"] is provider and kwargs["model"] == "nemotron"
-    assert "<history>" in kwargs["messages"][-1]["content"]
+    assert "<history>" not in kwargs["messages"][-1]["content"]
     llm = _sql(
         "SELECT llm FROM cold_start_alerts WHERE run_id = :r AND llm IS NOT NULL LIMIT 1",
         r=run_id,
@@ -692,7 +692,7 @@ async def test_a_new_alert_gets_the_live_baseline_in_triage(client, analyst):
     with patch.object(FindingProcessor, "_get_ai_triage", get_triage):
         result = await processor._triage_finding(finding)
     prompt = get_triage.await_args.args[0]
-    assert "<history>" in prompt and "This kind of alert fired" in prompt
+    assert "<history>" not in prompt and "This kind of alert fired" not in prompt
     assert result["ai_triage"]["baseline"]["rule"] == "clean_on_these_entities"
     assert result["ai_triage"]["baseline"]["stage1"] == "dismiss_candidate"
     assert (

@@ -12,7 +12,7 @@ history the customer already has.
 | Alert-kind and entity baselines | Alert history | None, counts | `core/coldstart/baseline.py` |
 | Closed-ticket precedent with label filtering | Ticket export | None, counts | `core/coldstart/tickets.py` |
 | Miss-rate bound per alert kind | Labels | None, statistics | `baseline.miss_bound` |
-| Judgment with the baseline as evidence | Assigned model | LLM | `core/coldstart/judge.py` |
+| Judgment of alerts the baseline left undecided, without its evidence | Assigned model | LLM | `core/coldstart/judge.py` |
 | Flow scoring that needs no warm-up | Flows and LogLM | LogLM, optional | Flagged rows through upload |
 | A person's review of one alert kind | A person | None | Not benign escalates the kind at once; agree only records |
 
@@ -109,10 +109,10 @@ Ticket reasons: `unmapped_disposition`, `no_closed_at`, `bulk_close`, `duplicate
 ## Live seam
 
 `core/coldstart/active.py` reads the live baseline with a 30-second cache. In
-`services/daemon/processor.py`, a new finding's triage prompt gets the evidence lines
-in a `<history>` fence and its assessment is stored under `ai_triage.baseline`
-(`stage1`, `rule`, `reasons`). A known-answer probe is left out. No live baseline
-means the prompt is unchanged.
+`services/daemon/processor.py`, a new finding's assessment is stored under
+`ai_triage.baseline` (`stage1`, `rule`, `reasons`) for a person to read. It does not reach
+the model, so the triage prompt is the same with or without a live baseline. A known-answer
+probe is left out.
 
 ## Rules
 
@@ -163,7 +163,13 @@ How to read this:
 - 5 clean tickets is thin: the 7-day misses came from that rule, whose stated bound is 45%.
   No tickets is thinner still. Both are recommendations a person sees with their reasons.
 
-On 80 undecided alerts from seeds 401 and 402, giving the model the baseline moved benign alerts flagged from 32 of 40 to 26 of 40, and real alerts flagged from 38 of 40 to 34 of 40 (`llm-evidence-seed401.json`, `llm-evidence-seed402.json`). That sample is small.
+The model does not get the baseline as evidence, because it made the model stand down on
+real attacks. On 320 undecided alerts from seeds 403 to 410, not used before, evidence moved
+real alerts flagged from 156 to 141 of 160 (15 lost, 0 gained, exact McNemar p = 0.00006) and
+benign alerts flagged from 124 to 84 of 160 (41 lost, 1 gained). A repeat of one seed flipped
+no flags, so this is not model noise. All 15 lost alerts cite the history in their reasoning.
+`scripts/coldstart/eval_llm_evidence.py` keeps the comparison so this can be rerun on real
+alerts, which have not been tried.
 
 ## Known limits
 
