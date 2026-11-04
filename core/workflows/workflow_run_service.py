@@ -250,6 +250,7 @@ class WorkflowRunService:
         *,
         workflow_id: Optional[str] = None,
         workflow_source: Optional[str] = None,
+        agent_id: Optional[str] = None,
         status: Optional[str] = None,
         run_kind: Optional[str] = None,
         started_at: Optional[datetime] = None,
@@ -262,7 +263,8 @@ class WorkflowRunService:
         large) ``result_summary`` field — use ``get_run`` for detail.
 
         ``workflow_source`` filters by how the run was started (e.g. "agent"
-        for runs enqueued through the agent-runs API). ``run_kind`` matches
+        for runs enqueued through the agent-runs API). ``agent_id`` keeps runs
+        with a step that agent took, its own runs included. ``run_kind`` matches
         the ``run_kind`` key of ``trigger_context``. ``started_at`` is an
         inclusive lower bound on when the run started. ``finished_after`` /
         ``finished_at`` bound when it finished (inclusive).
@@ -277,6 +279,14 @@ class WorkflowRunService:
                     stmt = stmt.where(WorkflowRun.workflow_id == workflow_id)
                 if workflow_source:
                     stmt = stmt.where(WorkflowRun.workflow_source == workflow_source)
+                if agent_id:
+                    stmt = stmt.where(
+                        WorkflowRun.run_id.in_(
+                            select(WorkflowRunPhase.run_id).where(
+                                WorkflowRunPhase.agent_id == agent_id
+                            )
+                        )
+                    )
                 if status:
                     stmt = stmt.where(WorkflowRun.status == status)
                 if run_kind:

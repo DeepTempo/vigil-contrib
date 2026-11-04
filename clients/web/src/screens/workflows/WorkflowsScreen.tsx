@@ -1,6 +1,7 @@
 import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../../shared/icons'
+import { leaveUnsaved } from '../../shared/unsaved'
 import { InfoTip } from '../../shared/InfoTip'
 import { utcDay } from '../../shared/utc'
 import { LevelBadge } from '../../shared/LevelBadge'
@@ -3925,6 +3926,8 @@ function AgentsTab({ feed, skillCount, onToggled }: { feed: Feed<AgentTemplate>;
           toolChanges={rows.find((a) => a.handle === editId)?.toolChanges}
           skillCount={skillCount}
           onClose={() => { setEditId(null); setCreating(false) }}
+          onRun={editId ? () => setRunAgent(rows.find((a) => a.handle === editId) ?? null) : undefined}
+          onWatch={(runId) => { if (leaveUnsaved()) navigate(`/workflows?run=${encodeURIComponent(runId)}`) }}
           onSaved={(saved) => {
             // a built-in's Save made a copy: reopen on it, in custom mode once the list has it
             const copy = builtinOpen && saved.id ? saved.id : null

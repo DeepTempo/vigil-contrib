@@ -1136,6 +1136,8 @@ export const workflowApi = {
 
   // persisted to workflow_runs, so History lists past runs without retrieving
   // every prompt transcript
+  listAgentRuns: (agentId: string, limit: number) =>
+    api.get('/workflows/runs', { params: { agent_id: agentId, limit } }),
   listRuns: (id: string, params: { limit?: number; offset?: number; status?: string } = {}) =>
     api.get(`/workflows/${id}/runs`, { params }),
   // A hunt lists its newest rows; evidenceLimit asks for more of them.

@@ -334,6 +334,31 @@ async def propose_feed_hunts(limit: int = 200):
     return propose_hunts_from_recent_indicators(limit=limit)
 
 
+def _stamp_rated_status(
+    run_service: WorkflowRunService, rows: List[Dict[str, Any]]
+) -> None:
+    """Each row's status as rates read it: a rejected run is stored failed."""
+    rated = run_service.rated_statuses([row["run_id"] for row in rows])
+    for row in rows:
+        row["rated_status"] = rated.get(row["run_id"], row.get("status"))
+
+
+# Before /workflows/{workflow_id}, which would take this path.
+@router.get("/workflows/runs")
+async def list_runs_by_agent(
+    agent_id: str,
+    limit: int = 5,
+    run_service: WorkflowRunService = Depends(provide_workflow_runs),
+):
+    """An agent's latest runs, newest first: any run with a step that agent took.
+
+    The same set its Agents row counts, so a rejected step shows here as it does there.
+    """
+    runs = run_service.list_runs(agent_id=agent_id, limit=max(1, min(limit, 200)))
+    _stamp_rated_status(run_service, runs)
+    return {"agent_id": agent_id, "runs": runs}
+
+
 # -----------------------------------------------------------------------------
 # Parameterized discovery/execution routes
 # -----------------------------------------------------------------------------
@@ -641,15 +666,6 @@ def _stamp_source_tiers(folded: Optional[Dict[str, Any]]) -> None:
         item["origins"] = origins
         tiers = [resolve_source_tier(one, InvestigationKind.CASE) for one in origins]
         item["source_tier"] = min(tiers, key=_TIER_ORDER.index).value
-
-
-def _stamp_rated_status(
-    run_service: WorkflowRunService, rows: List[Dict[str, Any]]
-) -> None:
-    """Each row's status as rates read it: a rejected run is stored failed."""
-    rated = run_service.rated_statuses([row["run_id"] for row in rows])
-    for row in rows:
-        row["rated_status"] = rated.get(row["run_id"], row.get("status"))
 
 
 @router.get("/workflows/runs/{run_id}")

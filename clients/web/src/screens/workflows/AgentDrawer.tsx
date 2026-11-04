@@ -3,6 +3,7 @@ import { Icon } from '../../shared/icons'
 import { ConfirmDialog } from '../../shared/ui'
 import { useWarnOnUnload } from '../../shared/unsaved'
 import ToolPicker from './ToolPicker'
+import AgentRuns from './AgentRuns'
 import { useToolCatalog } from './toolCatalog'
 import { agentsApi, aiConfigApi, type AIModelInfo, type GeneratedAgentDraft } from '../../services/api'
 import type { ToolChange } from '../../data/appData'
@@ -74,6 +75,8 @@ export function AgentDrawer({
   skillCount = null,
   onClose,
   onSaved,
+  onRun,
+  onWatch,
 }: {
   agentId: string | null
   builtIn?: boolean
@@ -85,6 +88,10 @@ export function AgentDrawer({
   onClose: () => void
   /** gets the saved agent, so the screen can reopen on a new copy */
   onSaved: (saved: { id?: string }) => void
+  /** an existing agent can be run on an alert from here */
+  onRun?: () => void
+  /** opens one of its runs in Watch it run */
+  onWatch?: (runId: string) => void
 }) {
   const isCreate = agentId === null
   const [agent, setAgent] = useState<CustomAgentDetail | null>(null)
@@ -266,6 +273,18 @@ export function AgentDrawer({
                 ? <span className="vg-side-hint">Built in. Saving creates your own editable copy; the original stays available.</span>
                 : agent?.forked_from && <span className="vg-side-hint">Forked from <span className="mono">{agent.forked_from}</span></span>}
             </span>
+            {onRun && !isCreate && (
+              <button
+                type="button"
+                className="vg-side-btn small line shrink-0"
+                // a run uses the saved agent, so unsaved tools or prompt would not be in it
+                disabled={dirty}
+                title={dirty ? 'Save first: a run uses the saved agent' : undefined}
+                onClick={onRun}
+              >
+                <Icon name="play" size={12} />&nbsp;Run on an alert
+              </button>
+            )}
             <button type="button" className="vg-side-close" aria-label="Close" onClick={close}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
@@ -449,6 +468,8 @@ export function AgentDrawer({
                 catalog={catalog}
                 marks={toolChanges}
               />
+
+              {!isCreate && agentId && onWatch && <AgentRuns agentId={agentId} onWatch={onWatch} />}
 
               {error && <div className="vg-side-err">{error}</div>}
               <div className="vg-side-foot">
