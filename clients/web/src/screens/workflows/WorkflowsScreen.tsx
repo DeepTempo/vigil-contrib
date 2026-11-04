@@ -13,6 +13,9 @@ import { TITLES } from '../../data/data'
 import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport } from '../../services/api'
 import DescribeDialog from './DescribeDialog'
 import WorkflowReaderPane from './WorkflowReaderPane'
+import WorkflowBuilder from './WorkflowBuilder'
+import CreateWorkflowDialog from './CreateWorkflowDialog'
+import { draftFrom, type BuilderDraft } from './workflowDraft'
 import { AgentDrawer } from './AgentDrawer'
 import { SkillDeleteModal, SkillDrawer } from './SkillDrawer'
 import { skillsApi } from '../../services/skillsApi'
@@ -36,14 +39,8 @@ import {
   type WfRun, type WfRunDetail, PHASE_WORD, shownPhaseStatus, shownStatus,
 } from './runRead'
 
-/** The body of POST /workflows/custom for a draft, so the server checks it as it would any other. */
-const draftPayload = (d: GeneratedDraft) => ({
-  name: (d.name ?? '').trim(),
-  description: (d.description ?? '').trim(),
-  use_case: d.use_case ?? '',
-  trigger_examples: d.trigger_examples ?? [],
-  phases: d.phases,
-})
+/** What the builder opens on: a saved workflow by id, a draft from a template or the AI, or nothing. */
+interface Building { workflowId?: string; initial?: BuilderDraft; origin?: string }
 
 type WfTab = 'workflows' | 'agents' | 'skills' | 'commands'
 
@@ -81,14 +78,18 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
   // a link followed while the screen is open names its tab again
   useEffect(() => setTab(tabFrom(searchParams.get('tab'))), [searchParams])
   // lifted so the header's "New workflow" opens the same dialog from any tab; the text it opens with, null when closed
+  const [choosing, setChoosing] = useState(false)
   const [describing, setDescribing] = useState<string | null>(null)
-  const [drafted, setDrafted] = useState<{ description: string; draft: GeneratedDraft } | null>(null)
+  const [building, setBuilding] = useState<Building | null>(null)
+  // Following a link leaves the builder. The shell's go() has asked about unsaved edits by then.
+  const here = searchParams.toString()
+  useEffect(() => setBuilding(null), [here])
   const workflows = useWorkflows()
   const agents = useAgents()
   const skills = useSkills()
   // ?run=<id> opens one run in place of the catalog, so a case activity can deep-link to it.
   const runId = searchParams.get('run')
-  const saveDraft = () => workflowApi.createCustom(draftPayload(drafted!.draft)).then(() => { setDrafted(null); workflows.reload() })
+  const build = (b: Building) => { setChoosing(false); setDescribing(null); setTab('workflows'); setBuilding(b) }
   const backToCatalog = useCallback(() => setSearchParams({}), [setSearchParams])
   // no chip while a list is loading or failed: a count of 0 would read as empty
   const count = (feed: { rows: unknown[]; phase: Phase }) => (feed.phase === 'ready' ? feed.rows.length : null)
@@ -99,7 +100,7 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
     ['commands', 'Commands', COMMANDS.length],
   ]
   // the Watch a run page carries its own header, as the board has it; the tab strip comes back with the catalog
-  const watching = tab === 'workflows' && runId !== null
+  const watching = (tab === 'workflows' && runId !== null) || building !== null
   return (
     <AgentRowsProvider value={agents.rows}>
       <div className={`flex flex-col gap-3.5 px-[26px] pt-5${watching ? ' hidden' : ''}`}>
@@ -109,7 +110,7 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
             <h1 className="m-0 text-[20px] leading-[1.25] tracking-[-0.2px] text-tx" style={{ fontWeight: 700 }}>{PAGE_TITLE}</h1>
             <p className="m-0 text-[13px] leading-[1.5] text-tx-2 max-w-[760px]">{PAGE_DESC}</p>
           </div>
-          <button className="btn primary wf-new" onClick={() => setDescribing('')}><Icon name="plus" /> New workflow</button>
+          <button className="btn primary wf-new" onClick={() => setChoosing(true)}><Icon name="plus" /> New workflow</button>
         </div>
         <div className="wf-tabs" role="tablist" aria-label="Workflow views">
           {tabs.map(([k, label, n]) => (
@@ -127,12 +128,37 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
           ))}
         </div>
       </div>
-      {tab === 'workflows' && drafted && <WorkflowReaderPane draft={drafted.draft} onBack={() => setDrafted(null)} onSave={saveDraft} onChangeDescription={() => setDescribing(drafted.description)} />}
-      {tab === 'workflows' && !drafted && (runId ? <RunView key={runId} runId={runId} onBack={backToCatalog} /> : <WorkflowCatalog feed={workflows} onCreate={() => setDescribing('')} goSettings={goSettings} />)}
+      {tab === 'workflows' && building && (
+        <WorkflowBuilder
+          key={building.workflowId ?? building.origin ?? 'new'}
+          workflowId={building.workflowId ?? null}
+          initial={building.initial}
+          origin={building.origin}
+          onCancel={() => setBuilding(null)}
+          onSaved={(id) => { setBuilding(null); if (id) setSearchParams({ workflow: id }); workflows.reload() }}
+        />
+      )}
+      {tab === 'workflows' && !building && (runId ? <RunView key={runId} runId={runId} onBack={backToCatalog} /> : (
+        <WorkflowCatalog
+          feed={workflows}
+          onCreate={() => setChoosing(true)}
+          onDescribe={() => setDescribing('')}
+          onEdit={(wf) => build({ workflowId: wf.id })}
+          goSettings={goSettings}
+        />
+      ))}
       {tab === 'agents' && <AgentsTab feed={agents} skillCount={skills.phase === 'ready' ? skills.rows.length : null} onToggled={workflows.reload} />}
       {tab === 'skills' && <SkillsTab feed={skills} workflows={workflows} agents={agents} />}
       {tab === 'commands' && <CommandsTab />}
-      {describing !== null && <DescribeDialog initial={describing} onClose={() => setDescribing(null)} onDrafted={(description, draft) => { setDescribing(null); setTab('workflows'); setDrafted({ description, draft }) }} />}
+      {choosing && (
+        <CreateWorkflowDialog
+          onClose={() => setChoosing(false)}
+          onBuild={() => build({})}
+          onTemplate={(t) => build({ initial: draftFrom(t), origin: `From the “${t.name}” template. Change anything before you save.` })}
+          onDescribe={() => { setChoosing(false); setDescribing('') }}
+        />
+      )}
+      {describing !== null && <DescribeDialog initial={describing} onClose={() => setDescribing(null)} onDrafted={(_description, draft: GeneratedDraft) => build({ initial: draftFrom(draft), origin: 'Drafted by Vigil from your description. Check each step before you save.' })} />}
     </AgentRowsProvider>
   )
 }
@@ -222,7 +248,7 @@ export const TRIGGER_LABEL: Record<string, string> = {
   shadow: 'Runs alongside',
 }
 
-type WfModal = { kind: 'run' | 'history' | 'edit' | 'delete'; wf: Workflow }
+type WfModal = { kind: 'run' | 'history' | 'delete'; wf: Workflow }
 
 /** One workflow on the board's card column. Clicking the card shows it in the
  *  reader beside the column, whose header holds the actions. */
@@ -258,7 +284,7 @@ function WorkflowCard({ wf: w, selected, onSelect }: { wf: Workflow; selected: b
           {commands.map((c) => <span key={c.id} className="wfk-chip acc">{c.name}</span>)}
         </span>
         <span className="wfk-line">
-          {w.enabled ? (
+          {w.enabled && w.runs7d === 0 ? 'Not run this week' : w.enabled ? (
             // each part is one unbreakable run, so a wrap lands between them
             <>
               <span>Ran {w.runs7d} {w.runs7d === 1 ? 'time' : 'times'} this week</span>
@@ -294,14 +320,19 @@ function useFillHeight<T extends HTMLElement>() {
   return ref
 }
 
-function WorkflowCatalog({ feed, onCreate, goSettings }: { feed: Feed<Workflow>; onCreate: () => void; goSettings: ConsoleScreenProps['goSettings'] }) {
+function WorkflowCatalog({ feed, onCreate, onDescribe, onEdit, goSettings }: {
+  feed: Feed<Workflow>
+  onCreate: () => void
+  onDescribe: () => void
+  /** opens a custom workflow in the builder */
+  onEdit: (wf: Workflow) => void
+  goSettings: ConsoleScreenProps['goSettings']
+}) {
   const { rows, phase, error, reload } = feed
   const [modal, setModal] = useState<WfModal | null>(null)
   // the pane replaces the table; read from the rows so an edit or a delete shows in it
   const [openId, setOpenId] = useOpenItem('workflow', 'workflows')
   const open = rows.find((w) => w.id === openId)
-  // bumped by a save, so the pane reads the edited definition again
-  const [saves, setSaves] = useState(0)
   const close = () => setModal(null)
   const list = rows
   // the board always shows one workflow in the reader; the first row until one is chosen
@@ -316,9 +347,9 @@ function WorkflowCatalog({ feed, onCreate, goSettings }: { feed: Feed<Workflow>;
           <EmptyState
             icon="flow"
             title="No workflows yet"
-            body="Create a workflow manually or generate one with AI from a plain-language investigation goal."
+            body="Build one step by step, start from a template, or describe it and let Vigil draft the steps."
             primary={{ label: 'New workflow', onClick: onCreate, icon: 'plus' }}
-            secondary={{ label: 'Generate with AI', onClick: onCreate, icon: 'sparkle' }}
+            secondary={{ label: 'Describe one', onClick: onDescribe, icon: 'sparkle' }}
           />
         </StateMsg>
       )}
@@ -329,19 +360,22 @@ function WorkflowCatalog({ feed, onCreate, goSettings }: { feed: Feed<Workflow>;
               <WorkflowCard key={w.id} wf={w} selected={shown?.id === w.id} onSelect={() => setOpenId(w.id)} />
             ))}
             <div className="wfk-new">
-              <span className="text-[13px] font-semibold leading-[1.35] text-tx">Start from a description</span>
-              <span className="text-[12px] leading-[1.45] text-tx-2">Describe how your team works a case and Vigil drafts the workflow for you to edit.</span>
-              <button className="btn ghost wfk-btn self-start" onClick={onCreate}><Icon name="sparkle" /> Generate with AI</button>
+              <span className="text-[13px] font-semibold leading-[1.35] text-tx">Make your own</span>
+              <span className="text-[12px] leading-[1.45] text-tx-2">Build it step by step, start from a template, or describe it and Vigil drafts the steps for you to check.</span>
+              <span className="flex flex-wrap gap-2">
+                <button className="btn primary wfk-btn" onClick={onCreate}><Icon name="plus" /> New workflow</button>
+                <button className="btn ghost wfk-btn" onClick={onDescribe}><Icon name="sparkle" /> Describe one</button>
+              </span>
             </div>
           </div>
           {shown && (
             <div className="wfk-reader">
               <WorkflowReaderPane
-                key={`${shown.id}:${saves}`}
+                key={`${shown.id}:${shown.updatedAt ?? ''}`} // an edit reads the definition again
                 wf={shown}
                 onHistory={() => setModal({ kind: 'history', wf: shown })}
                 onRun={() => setModal({ kind: 'run', wf: shown })}
-                onEdit={() => setModal({ kind: 'edit', wf: shown })}
+                onEdit={() => onEdit(shown)}
                 onDelete={() => setModal({ kind: 'delete', wf: shown })}
                 onToggled={reload}
               />
@@ -351,7 +385,6 @@ function WorkflowCatalog({ feed, onCreate, goSettings }: { feed: Feed<Workflow>;
       )}
       {modal?.kind === 'run' && <RunModal wf={modal.wf} onClose={close} onStarted={() => setModal({ kind: 'history', wf: modal.wf })} />}
       {modal?.kind === 'history' && <HistoryModal wf={modal.wf} onClose={close} />}
-      {modal?.kind === 'edit' && <EditModal wf={modal.wf} onClose={close} onSaved={() => { close(); setSaves((n) => n + 1); reload() }} />}
       {modal?.kind === 'delete' && <DeleteModal wf={modal.wf} onClose={close} onDeleted={() => { close(); reload() }} />}
       {phase === 'ready' && rows.length === 0 && (
         <div className="px-[22px] pb-5">
@@ -871,11 +904,17 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
 
   useEffect(() => {
     let cancelled = false
-    findingsApi.getAll({ limit: 50 }).then((r) => {
+    // Critical and high first, which is what a run is usually for, then the newest.
+    type Row = { finding_id: string; title?: string; severity?: string; data_source?: string }
+    const read = (params: Parameters<typeof findingsApi.getAll>[0]) =>
+      Promise.resolve().then(() => findingsApi.getAll(params)).then((r) => (r?.data?.findings || []) as Row[]).catch(() => [] as Row[])
+    Promise.all([read({ severity: 'critical', limit: 25 }), read({ severity: 'high', limit: 25 }), read({ limit: 50 })]).then((lists) => {
       if (cancelled) return
-      const list = (r.data?.findings || []) as { finding_id: string; title?: string; severity?: string }[]
+      const seen = new Set<string>()
+      // the daemon's known-answer probes are not alerts to run a workflow on
+      const list = lists.flat().filter((f) => f.finding_id && f.data_source !== 'probe' && !seen.has(f.finding_id) && seen.add(f.finding_id))
       setFindingOpts(list.map((f) => ({ id: f.finding_id, label: [f.severity, f.title].filter(Boolean).join(' · ') })))
-    }).catch(() => {})
+    })
     casesApi.getAll().then((r) => {
       if (cancelled) return
       setCaseOpts(
@@ -993,7 +1032,7 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
       <div className="flex flex-col gap-3.5">
         <p className="text-[12.5px] text-tx-3 leading-[1.5]">{agent
           ? `Pick an alert or a case for ${wf.name} to work on, with its own tools. Anything that would change something outside Vigil still asks a person first.`
-          : 'Provide at least one target, then start the run — the agents work it on the server and History reports where it got to. A finding or case gives the run something to work from, and the report comes back onto the case you pick. A run that tests beliefs takes what you state: each line of Hypothesis goes on the board as its own, and the benign explanation goes up beside them as the claim to beat.'}</p>
+          : 'Pick an alert or a case to work on; History shows the run, and its report goes onto the case.'}</p>
         {error && <div className="text-[12.5px] leading-[1.5]" style={{ color: 'var(--crit)' }}>{error}</div>}
         {isHuntLike && limits?.roles_note && (
           <div className="text-[12.5px] leading-[1.5]" style={{ color: 'var(--high)' }}>{limits.roles_note}</div>
@@ -1002,7 +1041,7 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
         {(isHuntLike || isInvestigate) && (
           <Blindness unbound={limits?.capabilities?.unbound ?? []} investigation={isInvestigate} />
         )}
-        <ComboField label="Finding ID" value={findingId} onChange={setFindingId} placeholder="f-20260614-3b5c585e" options={findingOpts} hint={findingOpts.length ? `${findingOpts.length} recent findings — start typing to filter.` : undefined} />
+        <ComboField label="Finding ID" value={findingId} onChange={setFindingId} placeholder="f-20260614-3b5c585e" options={findingOpts} hint={findingOpts.length ? `${findingOpts.length} recent findings, critical and high first — start typing to filter.` : undefined} />
         <ComboField label="Case ID" value={caseId} onChange={setCaseId} placeholder="case-2026-0142" options={caseOpts} />
         <Field label="Context" value={context} onChange={setContext} placeholder="Active ransomware on HOST-42…" textarea />
         {isHuntLike && (
@@ -2989,9 +3028,18 @@ interface GateApproval {
   reason?: string
 }
 
+// The run layer asks "Approve Contain, run by responder?" and gives the field as the reason; say both in words.
+function gateTitle(title: string | undefined, agentMeta: (id: string) => { label: string }): string | undefined {
+  const m = title?.match(/^Approve (.+), run by ([\w-]+)\?$/)
+  return m ? `Approve the “${m[1]}” step, run by the ${agentMeta(m[2]).label}?` : title
+}
+const gateReason = (reason: string) =>
+  reason.includes('approval_required') ? 'This step is set to wait for a person before it runs.' : reason
+
 /** Approve / Reject for a phase the playbook marked approval_required. Same calls
  *  as the approvals inbox: they resume the run. Reject needs a reason. */
 function PhaseGate({ runId, onAnswered }: { runId: string; onAnswered: () => void }) {
+  const agentMeta = useAgentMeta()
   const [actions, setActions] = useState<GateApproval[] | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -3041,11 +3089,11 @@ function PhaseGate({ runId, onAnswered }: { runId: string; onAnswered: () => voi
       )}
       {actions?.map((action) => (
         <div key={action.action_id} className="mt-2">
-          <div className="text-[12.5px] leading-[1.55]">{action.title || action.action_id}</div>
+          <div className="text-[12.5px] leading-[1.55]">{gateTitle(action.title, agentMeta) || action.action_id}</div>
           {action.description && action.description !== action.title && (
             <div className="muted text-[12px] mt-1">{action.description}</div>
           )}
-          {action.reason && <div className="text-[12.5px] mt-1">{action.reason}</div>}
+          {action.reason && <div className="text-[12.5px] mt-1">{gateReason(action.reason)}</div>}
           <div className="flex gap-2 items-center flex-wrap mt-2">
             <button className="btn primary" disabled={busy} onClick={() => settle(action.action_id, approvalsApi.approve(action.action_id))}>
               <Icon name="check2" /> Approve
@@ -3758,46 +3806,6 @@ function HuntCheckpoints({ checkpoints }: { checkpoints: HuntCheckpoint[] }) {
         </table>
       </div>
     </div>
-  )
-}
-
-function EditModal({ wf, onClose, onSaved }: { wf: Workflow; onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState(wf.name)
-  const [description, setDescription] = useState(wf.desc)
-  const [useCase, setUseCase] = useState(wf.useCase)
-  const [triggers, setTriggers] = useState(wf.cmds.join('\n'))
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const save = () => {
-    setBusy(true)
-    setError(null)
-    workflowApi
-      .updateCustom(wf.id, {
-        name: name.trim(),
-        description: description.trim(),
-        use_case: useCase.trim(),
-        trigger_examples: triggers.split('\n').map((t) => t.trim()).filter(Boolean),
-      })
-      .then(onSaved)
-      .catch((e) => { setError(errMsg(e)); setBusy(false) })
-  }
-
-  return (
-    <Popup open onClose={onClose} title={`Edit · ${wf.name}`}>
-      <div className="flex flex-col gap-3.5">
-        <Field label="Name" value={name} onChange={setName} />
-        <Field label="Description" value={description} onChange={setDescription} textarea />
-        <Field label="Use case" value={useCase} onChange={setUseCase} textarea />
-        <Field label="Trigger examples (one per line)" value={triggers} onChange={setTriggers} textarea mono />
-        <p className="text-[11.5px] text-tx-3">Stages are not editable yet.</p>
-        {error && <div className="text-[12.5px]" style={{ color: 'var(--crit)' }}>{error}</div>}
-        <div className="flex justify-end gap-2.5 pt-1">
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy || !name.trim()} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
-        </div>
-      </div>
-    </Popup>
   )
 }
 

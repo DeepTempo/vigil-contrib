@@ -1173,6 +1173,7 @@ export const workflowApi = {
   steer: (runId: string, kind: string, text = '', fields?: Record<string, unknown>) =>
     api.post(`/agent-runs/${runId}/directives`, { kind, text, ...(fields && { fields }) }),
 
+  getCustom: (id: string) => api.get(`/workflows/custom/${id}`),
   createCustom: (data: {
     name: string
     description: string
