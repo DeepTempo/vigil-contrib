@@ -30,11 +30,16 @@ class Verdict:
 def evidence_lines(alert: Alert, baseline: Baseline) -> List[str]:
     """What the history says about this alert, in plain facts."""
     row = baseline.signatures.get(signature_for(alert))
+    marked = (
+        ["A person reviewed this kind of alert and marked it not benign."]
+        if row is not None and row.marked_not_benign
+        else []
+    )
     if row is None or row.count == 0:
-        return [
+        return marked + [
             f"This kind of alert has not appeared in {baseline.days_covered} days of history."
         ]
-    lines = [
+    lines = marked + [
         f"This kind of alert fired {row.count} times on {row.active_days} of the "
         f"{baseline.days_covered} days of history, across {len(row.entity_counts)} entities."
     ]

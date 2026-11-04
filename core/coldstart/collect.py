@@ -36,9 +36,10 @@ from core.ingestion.ingestion_service import (
 )
 
 BATCH_SIZE = 500
+MAX_STALE_READS = 3
+MAX_READS = 2_000
 # Oldest first, so hitting the cap loses the newest alerts. It is reported, not silent.
 MAX_ROWS = 200_000
-MAX_STALE_READS = 3
 
 DROP_NO_TIME = "no_time"
 DROP_UNREADABLE = "unreadable"
@@ -109,11 +110,14 @@ async def collect_history(
     - A full batch's cursor stops at its newest alert and the next read starts there
       inclusively, so the boundary comes back and ids are what dedupe it. A batch
       stuck on one instant steps past it and can add nothing while there is still
-      more behind it.
+      more behind it. An unreported drop makes a repeating batch look short, so nothing
+      new alone does not end the walk. An empty short read, an unchanged cursor, or
+      ``MAX_STALE_READS`` short reads in a row do. A full page that moved the cursor is
+      progress even if every record in it was dropped, so only ``MAX_READS`` bounds those,
+      and hitting it reports the walk as capped.
     - A drained batch's cursor moves to now, and the next read is empty. That is how
       the walk ends: Splunk and CrowdStrike do not report drops, so a short list of
-      findings cannot be told from a short read, and a short batch with nothing new
-      does not end it. ``MAX_STALE_READS`` of those in a row do.
+      findings cannot be told from a short read.
     - CrowdStrike and Sentinel read the whole remaining window on each fetch and then
       cut it to ``max_items``, so a long history costs them more than it looks.
     """
@@ -124,8 +128,10 @@ async def collect_history(
     }
     result = CollectResult()
     seen: Set[str] = set()
-    stale = 0
-    while len(seen) < max_rows:
+    stale_reads = 0
+    reads = 0
+    while len(seen) < max_rows and reads < MAX_READS:
+        reads += 1
         batch = await adapter.fetch(cursor=cursor, max_items=BATCH_SIZE)
         if batch.dropped:
             result.dropped[DROP_UNREADABLE] += batch.dropped
@@ -140,13 +146,18 @@ async def collect_history(
         if fresh:
             await store_batch(fresh[: max_rows - result.read])
             result.read = min(len(seen), max_rows)
-        full = len(batch.findings) + batch.dropped >= BATCH_SIZE
-        stale = 0 if fresh or full else stale + 1
-        empty = not batch.findings and not full
-        if not fresh and (empty or batch.cursor == cursor or stale >= MAX_STALE_READS):
-            break
+            stale_reads = 0
+        else:
+            full = len(batch.findings) + batch.dropped >= BATCH_SIZE
+            stale_reads = 0 if full and batch.cursor != cursor else stale_reads + 1
+            if (
+                (not batch.findings and not full)
+                or batch.cursor == cursor
+                or stale_reads >= MAX_STALE_READS
+            ):
+                break
         cursor = batch.cursor
-    result.capped = len(seen) >= max_rows
+    result.capped = len(seen) >= max_rows or reads >= MAX_READS
     return result
 
 

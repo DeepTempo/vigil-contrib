@@ -12,14 +12,16 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 from core.coldstart import collect, store
 from core.coldstart.baseline import (
     Alert,
     Baseline,
+    SignatureBaseline,
     assess,
     build_baseline,
+    parse_time,
     signature_for,
 )
 from core.coldstart.judge import build_prompt, evidence_lines, parse_verdict
@@ -30,12 +32,7 @@ from core.federation import store as federation_store
 from core.federation.adapters._base import cursor_at
 from core.llm import oneshot
 from core.llm.target import resolve_dispatch
-from core.storage.models.cold_start import (
-    ACTIVE_STATUSES,
-    TRANSITIONS,
-    InvalidTransition,
-    RunStatus,
-)
+from core.storage.models.cold_start import TRANSITIONS, InvalidTransition, RunStatus
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -49,6 +46,8 @@ MAX_PER_SIGNATURE = 3
 MAX_CONSECUTIVE_FAILURES = 3
 
 NO_MODEL = "no model"
+LEASE_RETRY_SECONDS = 0.25
+LOCAL_SOURCES = frozenset({SAMPLE_SOURCE, collect.UPLOAD_SOURCE})
 
 # asyncio only weak-refs tasks; unheld ones get collected mid-run.
 _tasks: Set[asyncio.Task] = set()
@@ -73,6 +72,7 @@ class Build:
 def build_run(
     alerts: List[Alert],
     tickets: Iterable[Ticket],
+    reviews: Iterable[Tuple[str, str]] = (),
     *,
     history_days: int,
     review_days: int,
@@ -90,9 +90,18 @@ def build_run(
     outcomes, unlinked = outcomes_from(tickets, {a.alert_id: a for a in alerts})
     baseline = build_baseline(
         [a for a in alerts if a.observed_at >= start],
-        [o for o in outcomes if o.closed_at >= start],
+        # Every ticket from before as_of counts, however old: a real ticket outside the
+        # alert window is the one that stops a clean-looking kind from closing.
+        outcomes,
         as_of,
     )
+    # A person's word overrides the history without rewriting it: it is not a ticket and
+    # did not happen before as_of. Agreeing changes nothing, it only records the review.
+    for signature, verdict in reviews:
+        if verdict == "not_benign":
+            baseline.signatures.setdefault(
+                signature, SignatureBaseline(signature=signature)
+            ).marked_not_benign = True
     assessed = []
     for alert in alerts:
         if alert.observed_at < as_of:
@@ -117,6 +126,7 @@ def rebuild(run_id: str, now: datetime) -> None:
     build = build_run(
         store.load_alerts(run_id),
         store.load_tickets(run_id),
+        store.load_reviews(run_id),
         history_days=params.history_days,
         review_days=params.review_days,
         now=now,
@@ -197,10 +207,10 @@ async def _judge(run_id: str) -> None:
         await asyncio.to_thread(store.save_llm, run_id, alert.alert_id, llm)
         done += 1
         await asyncio.to_thread(store.set_progress, run_id, done=done)
+    await asyncio.to_thread(store.set_progress, run_id, phase="done")
     await asyncio.to_thread(
         store.transition, run_id, RunStatus.READY, judging_skipped=skipped
     )
-    await asyncio.to_thread(store.set_progress, run_id, phase="done")
 
 
 async def _collect_from_adapter(run_id: str, source: str, now: datetime) -> None:
@@ -230,7 +240,10 @@ async def _collect_from_adapter(run_id: str, source: str, now: datetime) -> None
 
 
 def _collect_sample(run_id: str, now: datetime) -> None:
+    params = store.run_params(run_id)
+    start = now - timedelta(days=params.history_days + params.review_days)
     findings, rows = load_sample(now)
+    findings = [f for f in findings if parse_time(f["timestamp"]) >= start]
     parsed = [row for row in map(collect.alert_row, findings) if row]
     store.insert_alerts(run_id, parsed)
     tickets = filter_tickets(rows)
@@ -251,15 +264,18 @@ async def _execute(run_id: str, lease: store.WorkerLease) -> None:
             await asyncio.to_thread(store.set_progress, run_id, phase="assessing")
             await asyncio.to_thread(rebuild, run_id, datetime.now(timezone.utc))
             await asyncio.to_thread(store.transition, run_id, RunStatus.JUDGING)
-        elif params.status is RunStatus.READY:
-            await asyncio.to_thread(store.transition, run_id, RunStatus.JUDGING)
         await _judge(run_id)
+        # A review saved while judging could not rebuild, because this worker held the
+        # lease. Failing here must not lose a good run: go-live rebuilds again and refuses
+        # if it still cannot.
+        if await asyncio.to_thread(store.load_reviews, run_id):
+            try:
+                await asyncio.to_thread(rebuild, run_id, datetime.now(timezone.utc))
+            except Exception:
+                logger.exception("Cold start run %s kept its build", run_id)
     except asyncio.CancelledError:
         # The API process is stopping. The run stays where it is, resumable.
         raise
-    except store.ActiveRunExists:
-        # Another run is collecting or judging. This one lost nothing and can resume.
-        logger.warning("Cold start run %s waits for an active run", run_id)
     except Exception as e:
         logger.exception("Cold start run %s failed", run_id)
         await asyncio.to_thread(
@@ -272,19 +288,48 @@ async def _execute(run_id: str, lease: store.WorkerLease) -> None:
         lease.release()
 
 
+def _prepare_start(run_id: str) -> None:
+    """What can refuse a start, here and not in the task, so the caller can answer it.
+    Inside the task, losing the one-active-run index would fail a good ready run."""
+    params = store.run_params(run_id)
+    if (
+        params.source == collect.UPLOAD_SOURCE
+        and params.status is RunStatus.COLLECTING
+        and not store.has_alerts(run_id)
+    ):
+        raise NothingToBuild("Upload an alert file first.")
+    if params.status is RunStatus.READY:
+        store.transition(run_id, RunStatus.JUDGING)
+
+
 async def start(run_id: str) -> None:
     """Work a run to ``ready`` as a task in this process. Raises RunBusy while any
-    process holds it. Taken here, not in the task, so the caller can answer 409."""
+    process holds the worker lease."""
     lease = await asyncio.to_thread(store.WorkerLease.acquire)
     if lease is None:
-        raise store.RunBusy("This run is already being worked on.")
+        raise store.RunBusy("A cold start run is already being worked on.")
+    try:
+        await asyncio.to_thread(_prepare_start, run_id)
+    except BaseException:
+        await asyncio.to_thread(lease.release)
+        raise
     task = asyncio.create_task(_execute(run_id, lease))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
 
-def can_resume(status: RunStatus) -> bool:
-    return status in ACTIVE_STATUSES or status is RunStatus.READY
+def rebuild_while_idle(run_id: str, wait_seconds: float = 0) -> None:
+    deadline = time.monotonic() + wait_seconds
+    lease = store.WorkerLease.acquire()
+    while lease is None and time.monotonic() < deadline:
+        time.sleep(LEASE_RETRY_SECONDS)
+        lease = store.WorkerLease.acquire()
+    if lease is None:
+        raise store.RunBusy("A cold start run is already being worked on.")
+    try:
+        rebuild(run_id, datetime.now(timezone.utc))
+    finally:
+        lease.release()
 
 
 def _enable_source(adapter: Any, actor: str) -> None:
@@ -315,7 +360,13 @@ def go_live(run_id: str, actor: str) -> None:
         return
     if RunStatus.LIVE not in TRANSITIONS[params.status]:
         raise InvalidTransition(params.status, RunStatus.LIVE)
-    if params.source not in (SAMPLE_SOURCE, collect.UPLOAD_SOURCE):
+    if params.source == SAMPLE_SOURCE:
+        raise SourceUnavailable(
+            "Sample history is synthetic, so it cannot become the baseline for real alerts."
+        )
+    # The baseline that goes live must include every review saved so far.
+    rebuild_while_idle(run_id)
+    if params.source not in LOCAL_SOURCES:
         adapter = registry.get_adapter(params.source)
         if adapter is None or not adapter.is_configured():
             raise SourceUnavailable(f"{params.source} is not configured.")

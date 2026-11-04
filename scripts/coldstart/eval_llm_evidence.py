@@ -29,9 +29,9 @@ from core.coldstart.baseline import (
     parse_time,
 )
 from core.coldstart.judge import build_prompt, evidence_lines, parse_verdict
-from scripts.coldstart.eval_day_one import (
+from scripts.coldstart.eval_common import (
     load_jsonl,
-    outcomes_from_tickets,
+    production_outcomes,
     truth_by_alert,
 )
 
@@ -97,13 +97,9 @@ def main() -> int:
     truth = truth_by_alert(manifest)
     install = parse_time(manifest["params"]["start"]) + timedelta(days=args.install_day)
     window = install - timedelta(days=args.history_days)
-    outcomes = [
-        o
-        for o in outcomes_from_tickets(load_jsonl(args.tickets), alerts)
-        if o.closed_at >= window
-    ]
+    retained = [a for a in alerts if window <= a.observed_at < install]
     baseline = build_baseline(
-        [a for a in alerts if window <= a.observed_at < install], outcomes, install
+        retained, production_outcomes(load_jsonl(args.tickets), retained), install
     )
     undecided = [
         a

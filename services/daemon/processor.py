@@ -8,6 +8,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from redis.exceptions import RedisError
 
+from core.coldstart import active
+from core.coldstart.baseline import Assessment, alert_from_finding, assess
+from core.coldstart.judge import evidence_lines, history_block
 from core.findings.exclusions import cached_active_ips, excluded_ips_of
 from core.ingestion.ack import settle_ack
 from core.ingestion.dedup import RedisDedupSet
@@ -67,13 +70,15 @@ TRIAGE_MAX_TOKENS = 8192
 
 def not_offered_reason(action: str, band: str, confidence: float, bar: float) -> str:
     """Why the gate turned an alert down, in the terms of the gate's own test."""
-    first = (
-        "triage said dismiss"
-        if action == "dismiss"
-        else "this install does not investigate that severity"
-    )
+    # Confidence does not offer a dismissal, however high, so the bar is not why.
+    if action == "dismiss":
+        return (
+            f"Not offered: triage said dismiss. Severity {band}, "
+            f"confidence {confidence:.0%}, no threat-intel hit."
+        )
     return (
-        f"Not offered: {first}. Severity {band}, confidence {confidence:.0%} "
+        "Not offered: this install does not investigate that severity. "
+        f"Severity {band}, confidence {confidence:.0%} "
         f"is under the {bar:.0%} bar, no threat-intel hit."
     )
 
@@ -695,8 +700,12 @@ class FindingProcessor:
 
         started = time.monotonic()
         try:
+            precedent = await self._baseline_precedent(finding)
+
             # Build triage prompt
-            prompt = self._build_triage_prompt(finding)
+            prompt = self._build_triage_prompt(
+                finding, precedent[0] if precedent else None
+            )
 
             # The gateway gives up at triage_timeout only if no worker has
             # started the call; a started one is still answering. This bound
@@ -709,7 +718,14 @@ class FindingProcessor:
             if response:
                 # Parse and apply AI assessment
                 finding = self._apply_triage_result(finding, response)
-                self.stats["triaged"] += 1
+                if "ai_triage_error" not in finding:
+                    self.stats["triaged"] += 1
+                    if precedent:
+                        finding["ai_triage"]["baseline"] = {
+                            "stage1": precedent[1].stage1.value,
+                            "rule": precedent[1].rule,
+                            "reasons": list(precedent[1].reasons),
+                        }
             else:
                 finding["ai_triage_error"] = error or "empty LLM response"
 
@@ -726,8 +742,25 @@ class FindingProcessor:
 
         return finding
 
-    def _build_triage_prompt(self, finding: Dict[str, Any]) -> str:
+    async def _baseline_precedent(
+        self, finding: Dict[str, Any]
+    ) -> Optional[Tuple[List[str], Assessment]]:
+        """What the live cold start baseline says about this finding, if there is one.
+        It informs the model. It never closes or dismisses anything. A known-answer
+        probe stays out: it tests the model on a fixed prompt."""
+        if finding.get("data_source") == PROBE_DATA_SOURCE:
+            return None
+        baseline = await asyncio.to_thread(active.live_baseline)
+        alert = alert_from_finding(finding) if baseline else None
+        if alert is None:
+            return None
+        return evidence_lines(alert, baseline), assess(alert, baseline)
+
+    def _build_triage_prompt(
+        self, finding: Dict[str, Any], evidence: Optional[List[str]] = None
+    ) -> str:
         """Build prompt for AI triage."""
+        history = history_block(evidence) if evidence else ""
         entity_context = finding.get("entity_context") or {}
         mitre = finding.get("mitre_predictions") or {}
         desc = finding.get("description") or "N/A"
@@ -762,7 +795,7 @@ Entity Context:
 - Users: {alert_text(users)}
 MITRE Predictions: {predictions}
 </alert_data>
-
+{history}
 Provide your assessment in the following format:
 SEVERITY: [critical/high/medium/low]
 CONFIDENCE: [0.0-1.0]
@@ -892,7 +925,14 @@ REASONING: [Brief explanation]
             fields[key] = None if key in fields else value.strip()
 
         severity = (fields.get("SEVERITY") or "").lower()
-        if severity in ["critical", "high", "medium", "low"]:
+        action = (fields.get("RECOMMENDED_ACTION") or "").lower()
+        severity_known = severity in ["critical", "high", "medium", "low"]
+        # Not an answer. An error, not a triage, so the backfill sweep asks again.
+        if not severity_known and action not in TRIAGE_ACTIONS:
+            finding["ai_triage_error"] = "reply had no parseable action or severity"
+            return finding
+
+        if severity_known:
             finding["severity"] = severity
             triage_result["severity"] = severity
 
@@ -911,7 +951,6 @@ REASONING: [Brief explanation]
             triage_result["category"] = category.lower()
             finding["category"] = category.lower()
 
-        action = (fields.get("RECOMMENDED_ACTION") or "").lower()
         if action in TRIAGE_ACTIONS:
             triage_result["recommended_action"] = action
             finding["recommended_action"] = action
@@ -1148,7 +1187,11 @@ REASONING: [Brief explanation]
         should_respond = (
             severity in ["critical", "high"]
             or recommended_action in ["isolate", "block"]
-            or confidence >= self.response_config.review_threshold
+            # Confidence in a dismissal is confidence there is nothing to look at.
+            or (
+                recommended_action != "dismiss"
+                and confidence >= self.response_config.review_threshold
+            )
         )
 
         # A threat-intel feed hit (stamped by _enrich_finding) offers the same

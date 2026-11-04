@@ -147,9 +147,17 @@ def _raw_key(value: Any) -> str:
 
 
 def _external_id(row: Mapping[str, Any]) -> str:
+    system = str(row.get("source_system") or "")
     for key in ("external_id", "ticket_id", "native_id", "id", "number"):
         if row.get(key):
-            return str(row[key])
+            value = str(row[key])
+            # Two ticket systems can use the same number. Treating them as duplicates
+            # could drop the one real ticket that keeps a kind from closing.
+            return (
+                f"{system}:{value}"
+                if system and not value.startswith(f"{system}:")
+                else value
+            )
     # A file with no id column still has to be idempotent across uploads.
     canonical = json.dumps(row, sort_keys=True, default=str)
     return "row-" + hashlib.sha256(canonical.encode()).hexdigest()[:32]
@@ -163,8 +171,7 @@ def _alert_ids(row: Mapping[str, Any]) -> Tuple[str, ...]:
             ids.append(str(value))
     if row.get("alert_id"):
         ids.append(str(row["alert_id"]))
-    # Both columns can name one alert, and that is one label, not two.
-    return tuple(dict.fromkeys(ids))
+    return tuple(ids)
 
 
 def _entities(row: Mapping[str, Any]) -> FrozenSet[str]:
@@ -251,12 +258,15 @@ def filter_tickets(rows: Iterable[Mapping[str, Any]]) -> FilteredTickets:
 def outcomes_from(
     tickets: Iterable[Ticket], alerts: Mapping[str, Alert]
 ) -> Tuple[List[Outcome], int]:
-    """One Outcome per alert a ticket closed, as the held-out eval counts them, else
-    one by source and title. Returns them with how many tickets link to nothing."""
+    """One Outcome per distinct alert a ticket closed, as the held-out eval counts them,
+    else one by source and title. A ticket cannot have closed an alert observed after
+    it closed, so that link counts for nothing. Returns them with how many tickets link
+    to nothing."""
     outcomes: List[Outcome] = []
     unlinked = 0
     for ticket in tickets:
-        linked = [alerts[i] for i in ticket.alert_ids if i in alerts]
+        referenced = [alerts[i] for i in dict.fromkeys(ticket.alert_ids) if i in alerts]
+        linked = [a for a in referenced if a.observed_at <= ticket.closed_at]
         if linked:
             outcomes.extend(
                 Outcome(
@@ -264,16 +274,18 @@ def outcomes_from(
                     ticket.disposition.value,
                     ticket.closed_at,
                     alert.entities,
+                    ticket.external_id,
                 )
                 for alert in linked
             )
-        elif ticket.signature:
+        elif ticket.signature and not referenced:
             outcomes.append(
                 Outcome(
                     ticket.signature,
                     ticket.disposition.value,
                     ticket.closed_at,
                     ticket.entities,
+                    ticket.external_id,
                 )
             )
         else:

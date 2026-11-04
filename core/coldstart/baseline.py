@@ -27,16 +27,21 @@ TRUE_POSITIVE = "true_positive"
 
 # Labels and history a clean signature needs before it can be a dismiss candidate.
 MIN_CLEAN_LABELS = 5
+# With no tickets, frequency is the only evidence. A repeatedly phished user also fires
+# often, so frequency alone cannot clear anything above low.
+ROUTINE_SEVERITIES = frozenset({"info", "low"})
 MIN_ROUTINE_ACTIVE_DAYS = 5
 MIN_ENTITY_SIGHTINGS = 3
-# Enough clean tickets that a new user or host on this kind of alert stays routine.
-MIN_STRONG_LABELS = 20
-ROUTINE_SEVERITIES = frozenset({"info", "low", "medium"})
+# Enough clean tickets that a new user or host on this kind of alert stays routine: 59
+# bounds the kind at 5% real. At 20 (a 13.9% bound) a short ticket window closed real
+# alerts on workstations the kind had never fired on (docs/coldstart/DESIGN.md).
+MIN_STRONG_LABELS = 59
+STRONG_SEVERITIES = frozenset({"info", "low", "medium"})
 MISS_CONFIDENCE = 0.05
 
 _IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-_HEX = re.compile(r"\b[0-9a-f]{8,}\b", re.I)
-_NUMBER = re.compile(r"\b\d+\b")
+# Only hash-length ids vary within one detection. Shorter codes can name the detection.
+_HEX = re.compile(r"\b[0-9a-f]{16,}\b", re.I)
 
 
 class Stage1(str, Enum):
@@ -63,6 +68,7 @@ class Outcome:
     disposition: str
     closed_at: datetime
     entities: FrozenSet[str] = frozenset()
+    ticket_id: Optional[str] = None
 
 
 @dataclass
@@ -77,6 +83,7 @@ class SignatureBaseline:
     entity_true_positive: Counter = field(default_factory=Counter)
     benign: int = 0
     true_positive: int = 0
+    marked_not_benign: bool = False
 
     @property
     def labelled(self) -> int:
@@ -94,6 +101,7 @@ class SignatureBaseline:
             "entity_true_positive": dict(self.entity_true_positive),
             "benign": self.benign,
             "true_positive": self.true_positive,
+            "marked_not_benign": self.marked_not_benign,
         }
 
     @classmethod
@@ -109,6 +117,7 @@ class SignatureBaseline:
             entity_true_positive=Counter(data["entity_true_positive"]),
             benign=data["benign"],
             true_positive=data["true_positive"],
+            marked_not_benign=data.get("marked_not_benign", False),
         )
 
 
@@ -205,14 +214,16 @@ def alert_from_finding(finding: Mapping[str, Any]) -> Optional[Alert]:
 
 
 def signature_of(source: str, title: str, entities: Iterable[str] = ()) -> str:
-    """The alert's kind: source plus title with its entities and numbers masked,
-    so "Failed login for alice" and "Failed login for bob" group together."""
+    """The alert's kind: source plus title with its entities, addresses and long ids
+    masked, so "Failed login for alice" and "Failed login for bob" group together. Other
+    numbers stay: "Windows Event 1102" must not inherit the precedent of "Event 4624".
+    """
     masked = title
     values = sorted((e.split(":", 1)[-1] for e in entities), key=len, reverse=True)
     for value in values:
         if value:
             masked = re.sub(re.escape(value), "<entity>", masked, flags=re.I)
-    masked = _NUMBER.sub("<n>", _HEX.sub("<id>", _IP.sub("<ip>", masked)))
+    masked = _HEX.sub("<id>", _IP.sub("<ip>", masked))
     return f"{source}|{' '.join(masked.split())}"
 
 
@@ -252,18 +263,29 @@ def build_baseline(
     for key, row in signatures.items():
         row.active_days = len(days[key])
 
+    # One ticket is one person's one decision, however many alerts it names. Counting
+    # per alert would let a single ticket meet a bar that means 59 separate decisions.
+    counted = set()
     for outcome in outcomes:
         if outcome.closed_at >= as_of:
             continue
         row = signatures.setdefault(
             outcome.signature, SignatureBaseline(signature=outcome.signature)
         )
+        scope = (outcome.signature, outcome.ticket_id)
+        anonymous = outcome.ticket_id is None
+        is_new = anonymous or scope not in counted
+        entities = [
+            e for e in outcome.entities if anonymous or (*scope, e) not in counted
+        ]
+        counted.add(scope)
+        counted.update((*scope, e) for e in outcome.entities)
         if outcome.disposition == TRUE_POSITIVE:
-            row.true_positive += 1
-            row.entity_true_positive.update(outcome.entities)
+            row.true_positive += is_new
+            row.entity_true_positive.update(entities)
         elif outcome.disposition in BENIGN_DISPOSITIONS:
-            row.benign += 1
-            row.entity_benign.update(outcome.entities)
+            row.benign += is_new
+            row.entity_benign.update(entities)
     return Baseline(
         as_of=as_of,
         signatures=signatures,
@@ -311,6 +333,12 @@ def _entities_clean(c: _Context) -> bool:
 # First match wins. Rules that add scrutiny run before any rule that removes it.
 RULES: Tuple[_Rule, ...] = (
     _Rule(
+        "marked_not_benign",
+        Stage1.ESCALATE,
+        lambda c: bool(c.row) and c.row.marked_not_benign,
+        lambda c: "A person reviewed this kind of alert and marked it not benign.",
+    ),
+    _Rule(
         "critical_source_severity",
         Stage1.ESCALATE,
         lambda c: c.alert.severity == "critical",
@@ -351,7 +379,8 @@ RULES: Tuple[_Rule, ...] = (
     _Rule(
         "strong_clean_ticket_history",
         Stage1.DISMISS_CANDIDATE,
-        lambda c: c.row.benign >= MIN_STRONG_LABELS,
+        lambda c: c.row.benign >= MIN_STRONG_LABELS
+        and c.alert.severity in STRONG_SEVERITIES,
         lambda c: f"{c.row.benign} past tickets of this kind closed benign and none real. Bounds the miss rate at {miss_bound(c.row.benign):.1%}.",
     ),
     _Rule(

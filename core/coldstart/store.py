@@ -6,9 +6,9 @@ import hashlib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from sqlalchemy import Float, case, func, select
+from sqlalchemy import Float, func, select
 from sqlalchemy import text as sql_text
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
@@ -37,7 +37,8 @@ class RunNotFound(Exception):
 
 
 class ActiveRunExists(Exception):
-    """Another run is collecting or judging."""
+    def __init__(self) -> None:
+        super().__init__("Another cold start run is collecting or judging.")
 
 
 class GroupNotFound(Exception):
@@ -60,18 +61,29 @@ def group_key(signature: str) -> str:
     return hashlib.sha256(signature.encode()).hexdigest()[:16]
 
 
+def _has_alerts(session: Session, run_id: str) -> bool:
+    return (
+        session.scalar(
+            select(ColdStartAlert.alert_id)
+            .where(ColdStartAlert.run_id == run_id)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def has_alerts(run_id: str) -> bool:
+    with unit_of_work() as session:
+        return _has_alerts(session, run_id)
+
+
 def _empty_upload_run(session: Session) -> Optional[ColdStartRun]:
     run = session.scalar(
         select(ColdStartRun).where(ColdStartRun.status == RunStatus.COLLECTING)
     )
-    if run is None or run.source != "upload":
+    if run is None or run.source != "upload" or _has_alerts(session, run.run_id):
         return None
-    has_rows = session.scalar(
-        select(ColdStartAlert.alert_id)
-        .where(ColdStartAlert.run_id == run.run_id)
-        .limit(1)
-    )
-    return None if has_rows else run
+    return run
 
 
 def create_run(
@@ -217,6 +229,17 @@ def load_alerts(run_id: str) -> List[Alert]:
             ).where(ColdStartAlert.run_id == run_id)
         ).all()
         return [_as_alert(row) for row in rows]
+
+
+def load_reviews(run_id: str) -> List[Tuple[str, str]]:
+    """Each reviewed kind and its verdict: one label per kind, not one per alert."""
+    with unit_of_work() as session:
+        rows = session.execute(
+            select(ColdStartAlert.signature, ColdStartAlert.review)
+            .where(ColdStartAlert.run_id == run_id, ColdStartAlert.review.isnot(None))
+            .distinct()
+        ).all()
+        return [(row[0], row[1]) for row in rows]
 
 
 def load_tickets(run_id: str) -> List[Ticket]:
@@ -544,15 +567,9 @@ def review_group(run_id: str, key: str, verdict: str, actor: str) -> Dict[str, A
         )
         counts = dict(
             session.execute(
-                select(
-                    case(
-                        (ColdStartAlert.review.is_(None), "pending"),
-                        else_=ColdStartAlert.review,
-                    ),
-                    func.count(),
-                )
+                select(ColdStartAlert.review, func.count())
                 .where(*in_group)
-                .group_by(sql_text("1"))
+                .group_by(ColdStartAlert.review)
             ).all()
         )
     return {
@@ -560,7 +577,7 @@ def review_group(run_id: str, key: str, verdict: str, actor: str) -> Dict[str, A
         "review": {
             "agree": counts.get("agree", 0),
             "not_benign": counts.get("not_benign", 0),
-            "pending": counts.get("pending", 0),
+            "pending": counts.get(None, 0),
         },
     }
 
