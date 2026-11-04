@@ -179,7 +179,8 @@ function SocConsoleInner() {
     () => (canTourHome ? ['nav', 'attention', 'ask'] : ['nav', 'ask']),
     [canTourHome],
   )
-  const [tourOn, setTourOn] = useState(() => !readConsoleTourSeen())
+  // The tour's second stop moves to Home, which would pull a first visit off day one setup.
+  const [tourOn, setTourOn] = useState(() => !readConsoleTourSeen() && current !== 'start')
   const [tourIndex, setTourIndex] = useState(0)
   const [demoOn, setDemoOn] = useState(false)
   // the stored choice yields to a narrow window and to the open dock, without being rewritten

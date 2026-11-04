@@ -878,7 +878,7 @@ const coldStartUpload = (runId: string, kind: 'alerts' | 'tickets', file: File) 
 export const coldStartApi = {
   sources: () => api.get<ColdStartSources>('/cold-start/sources'),
   // 404 when no run exists yet
-  latestRun: () => api.get<ColdStartRun>('/cold-start/runs/latest'),
+  latestRun: (timeout?: number) => api.get<ColdStartRun>('/cold-start/runs/latest', { timeout }),
   getRun: (runId: string) => api.get<ColdStartRun>(coldStartRunUrl(runId)),
   createRun: (request: ColdStartRunRequest) =>
     api.post<ColdStartRun>('/cold-start/runs', request, { timeout: LLM_TIMEOUT }),
