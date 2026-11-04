@@ -910,7 +910,7 @@ export const coldStartApi = {
     api.post<ColdStartRun>('/cold-start/runs', request, { timeout: LLM_TIMEOUT }),
   uploadAlerts: (runId: string, file: File) => coldStartUpload(runId, 'alerts', file),
   uploadTickets: (runId: string, file: File) => coldStartUpload(runId, 'tickets', file),
-  judge: (runId: string) => api.post(`${coldStartRunUrl(runId)}/judge`),
+  judge: (runId: string) => api.post<ColdStartRun>(`${coldStartRunUrl(runId)}/judge`),
   rebuild: (runId: string) => api.post(`${coldStartRunUrl(runId)}/rebuild`, undefined, { timeout: LLM_TIMEOUT }),
   groups: (runId: string) => api.get<{ groups: ColdStartGroup[] }>(`${coldStartRunUrl(runId)}/groups`),
   review: (runId: string, key: string, verdict: ColdStartVerdict) =>

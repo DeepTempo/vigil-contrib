@@ -300,6 +300,7 @@ function ColdStartFlow({ sources: firstSources, latest, go, goSettings }: Nav & 
         <Review
           run={flow.run}
           model={sources.model}
+          goSettings={goSettings}
           onAdded={adopt}
           onRefresh={() => { coldStartApi.getRun(flow.run.id).then(({ data }) => dispatch({ type: 'run', run: data })).catch(() => undefined) }}
           onContinue={() => { setNotice(null); dispatch({ type: 'continue' }) }}
@@ -471,7 +472,6 @@ function Building({ run, source, onAdded, dispatch }: { run: ColdStartRun; sourc
         {counts.tickets_unlinked > 0 && <li>{plural(counts.tickets_unlinked, 'kept ticket')} matched no alert in this window, so they do not count.</li>}
         {(counts.tickets_kept > 0 || droppedTickets > 0) && <li>{keptAndDropped('closed ticket', counts.tickets_kept, counts.tickets_dropped)}</li>}
         {run.status === 'judging' && <li>Model judging {n(counts.judged)} of {n(run.progress.total ?? 0)}.</li>}
-        {judgeGap(run) && <li>{judgeGap(run)}</li>}
       </ul>}
 
       {needsAlerts && (
@@ -527,7 +527,7 @@ function CappedNote() {
 
 const skippedText = (reason: string) =>
   reason === 'no model'
-    ? 'No model is assigned, so alerts it would judge wait for a person.'
+    ? 'No model was assigned when this ran, so alerts it would judge wait for a person.'
     : 'The model kept failing, so the alerts it did not judge wait for a person.'
 
 /** Fewer than three failed calls in a row leave judging_skipped empty, and those alerts were not judged. */
@@ -537,12 +537,14 @@ const judgeGap = ({ judging_skipped, progress: { judge_failed: failed } }: ColdS
   return `The model failed on ${plural(failed, 'alert')}, so ${failed === 1 ? 'it waits' : 'they wait'} for a person.`
 }
 
-function Review({ run, model, onAdded, onContinue, onStartOver, onRefresh }: { onRefresh: () => void; run: ColdStartRun; model: ColdStartSources['model']; onAdded: (added: Added) => void; onContinue: () => void; onStartOver: () => void }) {
+function Review({ run, model, goSettings, onAdded, onContinue, onStartOver, onRefresh }: Pick<Nav, 'goSettings'> & { onRefresh: () => void; run: ColdStartRun; model: ColdStartSources['model']; onAdded: (added: Added) => void; onContinue: () => void; onStartOver: () => void }) {
   const [groups, setGroups] = useState<ColdStartGroup[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [filter, setFilter] = useState<Stage | 'all'>('all')
+  const retry = useRequest()
   const { counts } = run
+  const gap = judgeGap(run)
 
   useEffect(() => {
     let live = true
@@ -585,7 +587,21 @@ function Review({ run, model, onAdded, onContinue, onStartOver, onRefresh }: { o
         {run.progress.capped && <CappedNote />}
         <p style={{ margin: 0, color: 'var(--tx0)' }}>Nothing has been closed, and every row below is only a recommendation.</p>
         <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>Not benign escalates that kind right away. Agree is recorded and changes nothing. A kind needs 59 clean closed tickets for a 5% bound.</p>
-        {judgeGap(run) && <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>{judgeGap(run)}</p>}
+        {gap && (
+          <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>
+            {gap}
+            {!model && <> <button type="button" className="cs-link" onClick={() => goSettings('ai-config')}>Assign a model</button>, then come back to judge them.</>}
+          </p>
+        )}
+        {gap && model && (
+          <div className="cs-row">
+            <button type="button" className="btn ghost" disabled={retry.busy} onClick={() => retry.send(async () => onAdded({ run: (await coldStartApi.judge(run.id)).data, notice: null }), 'Could not retry judging.')}>
+              {retry.busy ? 'Starting' : 'Retry judging'}
+            </button>
+            <span className="cs-muted" style={{ fontSize: 12.5 }}>Your reviews stay.</span>
+          </div>
+        )}
+        {retry.error && <div className="cs-card cs-error" role="alert">{retry.error}</div>}
 
         <div className="cs-row" role="group" aria-label="Filter alert kinds">
           <button type="button" className="cs-chipbtn" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All <span className="n">{n(groups?.length ?? 0)}</span></button>
