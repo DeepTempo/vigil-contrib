@@ -818,7 +818,7 @@ export interface ColdStartRun {
   history_days: number
   review_days: number
   judging_skipped: string | null
-  progress: { phase: string; done?: number; total?: number; alerts?: number; capped?: boolean }
+  progress: { phase: string; done?: number; total?: number; alerts?: number; capped?: boolean; judge_failed?: number }
   counts: {
     alerts_read: number
     days_covered: number

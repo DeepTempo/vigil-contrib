@@ -469,7 +469,7 @@ function Building({ run, source, onAdded, dispatch }: { run: ColdStartRun; sourc
         {counts.tickets_unlinked > 0 && <li>{plural(counts.tickets_unlinked, 'kept ticket')} matched no alert in this window, so they do not count.</li>}
         {(counts.tickets_kept > 0 || droppedTickets > 0) && <li>{keptAndDropped('closed ticket', counts.tickets_kept, counts.tickets_dropped)}</li>}
         {run.status === 'judging' && <li>Model judging {n(counts.judged)} of {n(run.progress.total ?? 0)}.</li>}
-        {run.judging_skipped && <li>{skippedText(run.judging_skipped)}</li>}
+        {judgeGap(run) && <li>{judgeGap(run)}</li>}
       </ul>}
 
       {needsAlerts && (
@@ -528,6 +528,13 @@ const skippedText = (reason: string) =>
     ? 'No model is assigned, so alerts it would judge wait for a person.'
     : 'The model kept failing, so the alerts it did not judge wait for a person.'
 
+/** Fewer than three failed calls in a row leave judging_skipped empty, and those alerts were not judged. */
+const judgeGap = ({ judging_skipped, progress: { judge_failed: failed } }: ColdStartRun) => {
+  if (judging_skipped) return skippedText(judging_skipped)
+  if (!failed) return null
+  return `The model failed on ${plural(failed, 'alert')}, so ${failed === 1 ? 'it waits' : 'they wait'} for a person.`
+}
+
 function Review({ run, model, onAdded, onContinue, onStartOver, onRefresh }: { onRefresh: () => void; run: ColdStartRun; model: ColdStartSources['model']; onAdded: (added: Added) => void; onContinue: () => void; onStartOver: () => void }) {
   const [groups, setGroups] = useState<ColdStartGroup[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -576,7 +583,7 @@ function Review({ run, model, onAdded, onContinue, onStartOver, onRefresh }: { o
         {run.progress.capped && <CappedNote />}
         <p style={{ margin: 0, color: 'var(--tx0)' }}>Nothing has been closed, and every row below is only a recommendation.</p>
         <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>Not benign escalates that kind right away. Agree is recorded and changes nothing. A kind needs 59 clean closed tickets for a 5% bound.</p>
-        {run.judging_skipped && <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>{skippedText(run.judging_skipped)}</p>}
+        {judgeGap(run) && <p className="cs-muted" style={{ margin: 0, fontSize: 12.5 }}>{judgeGap(run)}</p>}
 
         <div className="cs-row" role="group" aria-label="Filter alert kinds">
           <button type="button" className="cs-chipbtn" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>All <span className="n">{n(groups?.length ?? 0)}</span></button>
@@ -674,7 +681,7 @@ function GroupRow({ run, group, onRecorded }: { run: ColdStartRun; group: ColdSt
         <td>
           {group.llm.judged > 0
             ? <div>{plural(group.llm.judged, 'alert')} judged{verdicts ? `: ${verdicts}` : ''}</div>
-            : <div className="cs-muted">{run.judging_skipped && group.stage1.abstain > 0 ? 'No model: waits for a person' : 'Not sent to the model'}</div>}
+            : <div className="cs-muted">{judgeGap(run) && group.stage1.abstain > 0 ? 'Not judged: waits for a person' : 'Not sent to the model'}</div>}
           <button type="button" className="cs-link" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Hide details' : 'Show details'}</button>
         </td>
         <td>

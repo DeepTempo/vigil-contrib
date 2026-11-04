@@ -172,6 +172,7 @@ async def _judge(run_id: str) -> None:
     )
     skipped = None
     failures = 0
+    failed = 0
     for candidate in chosen:
         if candidate.judged:
             continue
@@ -190,6 +191,7 @@ async def _judge(run_id: str) -> None:
             break
         except Exception as e:  # left unjudged, so a resume tries it again
             failures += 1
+            failed += 1
             logger.warning("Cold start judge call failed: %s", type(e).__name__)
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 skipped = f"model failing: {type(e).__name__}"
@@ -204,7 +206,9 @@ async def _judge(run_id: str) -> None:
         await asyncio.to_thread(store.save_llm, run_id, alert.alert_id, llm)
         done += 1
         await asyncio.to_thread(store.set_progress, run_id, done=done)
-    await asyncio.to_thread(store.set_progress, run_id, phase="done")
+    await asyncio.to_thread(
+        store.set_progress, run_id, phase="done", judge_failed=failed
+    )
     await asyncio.to_thread(
         store.transition, run_id, RunStatus.READY, judging_skipped=skipped
     )
