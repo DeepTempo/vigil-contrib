@@ -452,6 +452,9 @@ export const caseSearchApi = {
 
 /** The command bar's one search: exact ids, cases, alerts, workflows, agents and skills. */
 export const searchApi = {
+  /** The ranked search. `words` asks for words and related terms only, without the embedding model. */
+  ranked: (q: string, signal: AbortSignal, words = false) =>
+    api.get('/search/ranked', { params: { q, limit: 5, ...(words && { words: true }) }, signal }),
   query: (q: string, signal?: AbortSignal) =>
     api.get<Schema<'SearchResults'>>('/search', { params: { q }, signal }),
 }

@@ -219,14 +219,18 @@ export const COMMANDS: CommandDef[] = [
 
 export const LIVE_COMMANDS = COMMANDS.filter((c): c is LiveCommand => !c.later)
 
-type DestTag = 'Case' | 'Alert' | 'Page' | 'Command' | 'Recent' | 'Ask' | 'Argument'
+type DestTag = 'Case' | 'Alert' | 'Page' | 'Command' | 'Recent' | 'Ask' | 'Argument' | 'Go'
 
 export type Section =
+  | 'Best match'
   | 'Recent searches'
   | 'Commands'
   | 'Custom commands'
   | 'Cases'
   | 'Alerts'
+  | 'Workflows'
+  | 'Agents'
+  | 'Skills'
   | 'Pages'
   | 'Agents & workflows'
   | 'Ask Vigil'
@@ -238,8 +242,24 @@ export interface BoardLink {
   desc: string
 }
 
-/** What GET /search answers; a kind the role may not read comes back empty. */
-export type SearchHits = Schema<'SearchResults'>
+/** One result of /api/search/ranked: an item found by its words or by what it means. */
+export interface FoundItem {
+  kind: 'alert' | 'case' | 'workflow' | 'agent' | 'skill'
+  id: string
+  title: string
+  subtitle?: string
+  /** "mentions “exfil”", "about exfiltration", "similar meaning" */
+  why?: string
+  route: { screen?: string; search?: string; case?: string }
+}
+
+export interface Found {
+  groups: Partial<Record<FoundItem['kind'], FoundItem[]>>
+  counts?: Partial<Record<FoundItem['kind'], number>>
+}
+
+/** What GET /search answers; a kind the role may not read comes back empty. `found` is the ranked search, null when it did not answer. */
+export type SearchHits = Schema<'SearchResults'> & { found?: Found | null }
 export type Hit = Schema<'SearchHit'>
 type MatchType = NonNullable<Hit['match_type']>
 
@@ -259,6 +279,8 @@ export interface PaletteRow {
   /** The query string a Page row opens its page with. */
   search?: string
   recent?: string
+  /** where a found workflow, agent or skill opens */
+  go?: { screen: string; search?: string }
   /** The line this row puts in the bar. */
   fill?: string
   /** This row names the command already typed, so there is nothing to move to. */
@@ -422,6 +444,7 @@ export function tagText(row: PaletteRow): string {
       return 'Opens case'
     case 'Alert':
     case 'Page':
+    case 'Go':
       return 'Opens page'
     case 'Recent':
       return 'Search'
@@ -701,6 +724,12 @@ function askRow(query: string): PaletteRow {
   }
 }
 
+const FOUND_SECTIONS: [FoundItem['kind'], Section, IconName][] = [
+  ['workflow', 'Workflows', 'flow'],
+  ['agent', 'Agents', 'bot'],
+  ['skill', 'Skills', 'note'],
+]
+
 function pushCase(rows: PaletteRow[], seen: Set<string>, hit: Hit): void {
   if (!hit.id || seen.has(hit.id)) return
   seen.add(hit.id)
@@ -756,7 +785,51 @@ export function buildRows(
       findingId: hit.id,
     })
   }
+  // The ranked search's cases lead; main's text and indicator search fills in after.
+  const found = hits?.found
+  for (const item of found?.groups?.case ?? []) {
+    pushCase(cases, seen, { id: item.id, title: item.title })
+    const row = cases.find((r) => r.caseId === item.id)
+    if (row && !row.desc) row.desc = joinParts([item.subtitle, item.why])
+  }
   for (const hit of hits?.cases ?? []) pushCase(cases, seen, hit)
+  for (const item of found?.groups?.alert ?? []) {
+    // Main's search found it too: the row stays, and says why it matched.
+    if (seenAlerts.has(item.id)) {
+      const held = alerts.find((row) => row.findingId === item.id)
+      if (held) held.desc = joinParts([item.subtitle, item.why])
+      continue
+    }
+    seenAlerts.add(item.id)
+    alerts.push({
+      key: `finding:${item.id}`,
+      label: item.title || item.id,
+      hint: item.id,
+      dest: 'Alert',
+      section: 'Alerts',
+      icon: 'alert',
+      desc: joinParts([item.subtitle, item.why]),
+      disabled: false,
+      findingId: item.id,
+    })
+  }
+  const others: PaletteRow[] = []
+  for (const [kind, section, icon] of FOUND_SECTIONS) {
+    for (const item of found?.groups?.[kind] ?? []) {
+      if (!item.route.screen) continue
+      others.push({
+        key: `${kind}:${item.id}`,
+        label: item.title,
+        hint: '',
+        dest: 'Go',
+        section,
+        icon,
+        desc: joinParts([item.subtitle, item.why]),
+        disabled: false,
+        go: { screen: item.route.screen, search: item.route.search },
+      })
+    }
+  }
   const pages: PaletteRow[] = boards
     .filter((board) => board.label.toLowerCase().includes(ql))
     .map((board) => ({
@@ -771,8 +844,10 @@ export function buildRows(
       page: board.key,
     }))
   // Deep links into Agents & workflows: the workflow, or the agent or skill on its tab.
+  const ranked = new Set(others.map((row) => row.key))
   const automation: PaletteRow[] = AUTOMATION.flatMap(({ kind, noun, icon, search }) =>
-    (hits?.[kind] ?? []).map((hit) => ({
+    // main's kinds are plural, the ranked search's rows singular
+    (hits?.[kind] ?? []).filter((hit) => !ranked.has(`${kind.slice(0, -1)}:${hit.id}`)).map((hit) => ({
       key: `${kind}:${hit.id}`,
       label: hit.title,
       hint: '',
@@ -789,8 +864,13 @@ export function buildRows(
   const recent = recents.filter((text) => text.toLowerCase().includes(ql)).map(recentRow)
   // An exact finding id with no exact case id puts Alerts first.
   const alertsFirst = Boolean(hits?.finding_exact?.id) && !hits?.case_exact
+  const matched = [...(alertsFirst ? [...alerts, ...cases] : [...cases, ...alerts]), ...others]
+  // something named exactly what was typed leads, whatever kind it is
+  const exact = matched.findIndex((row) => row.label.toLowerCase() === ql)
+  const lead = exact > 0 ? [{ ...matched.splice(exact, 1)[0], section: 'Best match' as const }] : []
   return [
-    ...(alertsFirst ? [...alerts, ...cases] : [...cases, ...alerts]),
+    ...lead,
+    ...matched,
     ...pages,
     ...automation,
     ...commands,

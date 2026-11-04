@@ -41,6 +41,7 @@ forbidden_modules =
     core.memory
     core.reporting
     core.response
+    core.search
     core.skills
     core.threat_intel
     core.workflows
@@ -63,6 +64,7 @@ source_modules =
     core.memory
     core.reporting
     core.response
+    core.search
     core.skills
     core.threat_intel
     core.workflows

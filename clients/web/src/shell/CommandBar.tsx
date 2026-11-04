@@ -28,6 +28,7 @@ import {
   writeRecent,
   type BarView,
   type BoardLink,
+  type Found,
   type HuntAttachment,
   type PaletteRow,
   type RefLookup,
@@ -35,6 +36,13 @@ import {
   useJiraReadiness,
 } from './commandBarModel'
 import { errorText } from '../shared/errorText'
+
+const rankedSearch = (query: string, signal: AbortSignal, words = false) =>
+  searchApi.ranked(query, signal, words).then((res) => res.data as Found).catch(() => null)
+
+const NO_HITS: SearchHits = { case_exact: null, finding_exact: null, cases: [], alerts: [], workflows: [], agents: [], skills: [], found: null }
+
+const groupsOf = (found: Found | null) => (found && typeof found === 'object' && 'groups' in found ? found : null)
 
 // A disabled button gets no hover, so the tooltip sits on a wrapper.
 function LaterTip({ later, children }: { later: boolean; children: ReactNode }) {
@@ -71,6 +79,8 @@ export default function CommandBar({
   const [active, setActive] = useState<number | null>(null)
   const [recents, setRecents] = useState<string[]>([])
   const [hits, setHits] = useState<SearchHits | null>(null)
+  // the query whose meaning matches are still on their way (the embedding model can take seconds)
+  const [searching, setSearching] = useState<string | null>(null)
   const [answer, setAnswer] = useState<RefLookup | null>(null)
   const jira = useJiraReadiness()
   const [running, setRunning] = useState(false)
@@ -119,16 +129,42 @@ export default function CommandBar({
     const q = query.trim()
     if (!open || !q || q.startsWith('/')) {
       setHits(null)
+      setSearching(null)
       return
     }
     let live = true
+    let meant = false
+    let landed = ''
+    setSearching(q)
+    // Rows moving under a cursor would send Enter somewhere else, so a change of rows puts
+    // the cursor back on the first, as main's search does when it lands.
+    const land = (found: Found | null) => {
+      const groups = groupsOf(found)
+      const shape = JSON.stringify(groups?.groups ?? null)
+      if (!groups || shape === landed) return
+      landed = shape
+      setHits((held) => ({ ...(held ?? NO_HITS), found: groups }))
+      setActive(null)
+    }
+    // Each answer lands as it comes: words across alerts, cases, workflows, agents and
+    // skills first, the exact lookups when they are back, and the meaning matches last,
+    // which replace the word-only groups.
     const round = new AbortController()
     const timer = setTimeout(() => {
+      void rankedSearch(q, round.signal, true).then((found) => {
+        if (live && !meant) land(found)
+      })
       void searchApi.query(q, round.signal).then((res) => {
         if (!live) return
-        setHits(res.data)
+        setHits((held) => ({ ...res.data, found: held?.found ?? null }))
         setActive(null)
       }).catch(() => {})
+      void rankedSearch(q, round.signal).then((found) => {
+        if (!live) return
+        meant = true
+        setSearching(null)
+        land(found)
+      })
     }, 150)
     return () => {
       live = false
@@ -322,6 +358,10 @@ export default function CommandBar({
       if (row.search) onGo(row.page, { search: row.search })
       else onGo(row.page)
     }
+    else if (row.dest === 'Go' && row.go) {
+      inputRef.current?.blur()
+      onGo(row.go.screen, row.go.search ? { search: row.go.search } : undefined)
+    }
     else if (row.dest === 'Alert' && row.findingId) {
       // The popup hands focus back to its opener, which would reopen this menu.
       inputRef.current?.blur()
@@ -513,7 +553,10 @@ export default function CommandBar({
             </div>
           )}
           <div className="vg-command-scroll" id="vg-command-results" role="listbox">
-            {rows.length === 0 && <div className="vg-command-empty">{line?.kind === 'unknown' ? `No command ${line.token}. Tab asks Vigil.` : 'No matches'}</div>}
+            {searching !== null && searching === query.trim() && (
+              <div className="vg-command-empty" role="status">{hits ? 'Searching for matches by meaning…' : 'Searching…'}</div>
+            )}
+            {rows.length === 0 && searching === null && <div className="vg-command-empty">{line?.kind === 'unknown' ? `No command ${line.token}. Tab asks Vigil.` : 'No matches'}</div>}
             {groups.map((group) => (
               <div key={group.section} role="group" aria-label={group.section}>
                 <div className="vg-command-section" aria-hidden="true">{group.section}</div>
