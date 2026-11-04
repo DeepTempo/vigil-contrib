@@ -52,8 +52,10 @@ from core.storage.models.config import (
     UserPreference,
 )
 from core.storage.models.detection_rule import (
+    DETECTION_RULE_STAGES,
     DETECTION_RULE_STATUSES,
     DetectionRule,
+    DetectionRuleStage,
     DetectionRuleVersion,
 )
 from core.storage.models.episodic import (
@@ -114,8 +116,10 @@ __all__ = [
     "Conversation",
     "CustomAgent",
     "CustomWorkflow",
+    "DETECTION_RULE_STAGES",
     "DETECTION_RULE_STATUSES",
     "DetectionRule",
+    "DetectionRuleStage",
     "DetectionRuleVersion",
     "EpisodicDistilFailure",
     "EpisodicDistilMarker",

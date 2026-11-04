@@ -103,8 +103,6 @@ evidence/
 *.csv
 *.json.gz
 *.parquet
-# Read at runtime by core/coldstart/sample_history.py.
-!data/coldstart/sample_history.json.gz
 
 # Backup files
 *.bak
