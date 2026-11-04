@@ -252,6 +252,13 @@ def _collect_sample(run_id: str, now: datetime) -> None:
     store.set_progress(run_id, alerts=len(parsed))
 
 
+async def _rebuild_keeping_the_run(run_id: str) -> None:
+    try:
+        await asyncio.to_thread(rebuild, run_id, datetime.now(timezone.utc))
+    except Exception:
+        logger.exception("Cold start run %s kept its build", run_id)
+
+
 async def _execute(run_id: str, lease: store.WorkerLease) -> None:
     try:
         params = await asyncio.to_thread(store.run_params, run_id)
@@ -264,15 +271,15 @@ async def _execute(run_id: str, lease: store.WorkerLease) -> None:
             await asyncio.to_thread(store.set_progress, run_id, phase="assessing")
             await asyncio.to_thread(rebuild, run_id, datetime.now(timezone.utc))
             await asyncio.to_thread(store.transition, run_id, RunStatus.JUDGING)
+        else:
+            # A file uploaded since the last build is in no assessment yet.
+            await _rebuild_keeping_the_run(run_id)
         await _judge(run_id)
         # A review saved while judging could not rebuild, because this worker held the
         # lease. Failing here must not lose a good run: go-live rebuilds again and refuses
         # if it still cannot.
         if await asyncio.to_thread(store.load_reviews, run_id):
-            try:
-                await asyncio.to_thread(rebuild, run_id, datetime.now(timezone.utc))
-            except Exception:
-                logger.exception("Cold start run %s kept its build", run_id)
+            await _rebuild_keeping_the_run(run_id)
     except asyncio.CancelledError:
         # The API process is stopping. The run stays where it is, resumable.
         raise

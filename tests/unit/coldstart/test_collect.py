@@ -309,3 +309,21 @@ async def test_a_walk_that_hits_the_read_budget_says_it_is_incomplete(monkeypatc
     )
     result, _ = await _collect(adapter)
     assert result.capped
+
+
+def test_a_file_using_one_id_for_two_sources_is_refused_and_a_repeat_is_not(tmp_path):
+    path = tmp_path / "alerts.jsonl"
+    row = {
+        "external_id": "17",
+        "title": "Port scan",
+        "severity": "low",
+        "timestamp": "2026-01-01T00:00:00Z",
+    }
+    path.write_text("\n".join(json.dumps({**row, "source": "ids"}) for _ in range(2)))
+    assert [r["source"] for r in parse_alert_file(path, "jsonl").rows] == ["ids"]
+
+    path.write_text(
+        "\n".join(json.dumps({**row, "source": src}) for src in ("ids", "edr"))
+    )
+    with pytest.raises(ValueError, match="17"):
+        parse_alert_file(path, "jsonl")

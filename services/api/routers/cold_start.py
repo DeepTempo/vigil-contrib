@@ -203,7 +203,7 @@ def _file_key(path: Path) -> str:
 
 def _store_alert_file(run_id: str, path: Path, fmt: str) -> Dict[str, Any]:
     parsed = collect.parse_alert_file(path, fmt)
-    store.insert_alerts(run_id, parsed.rows)
+    store.insert_uploaded_alerts(run_id, parsed.rows)
     store.record_drops(run_id, "alerts", _file_key(path), parsed.dropped)
     return {"kept": len(parsed.rows), "dropped": dict(parsed.dropped)}
 

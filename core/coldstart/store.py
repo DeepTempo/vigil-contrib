@@ -147,14 +147,40 @@ def record_drops(run_id: str, kind: str, key: str, dropped: Mapping[str, int]) -
         run.drops = kinds
 
 
+def _insert_alerts(session: Session, run_id: str, rows: List[Dict[str, Any]]) -> None:
+    for start in range(0, len(rows), _CHUNK):
+        session.execute(
+            insert(ColdStartAlert)
+            .values([{**r, "run_id": run_id} for r in rows[start : start + _CHUNK]])
+            .on_conflict_do_nothing(index_elements=["run_id", "alert_id"])
+        )
+
+
 def insert_alerts(run_id: str, rows: List[Dict[str, Any]]) -> None:
     with unit_of_work() as session:
-        for start in range(0, len(rows), _CHUNK):
-            session.execute(
-                insert(ColdStartAlert)
-                .values([{**r, "run_id": run_id} for r in rows[start : start + _CHUNK]])
-                .on_conflict_do_nothing(index_elements=["run_id", "alert_id"])
+        _insert_alerts(session, run_id, rows)
+
+
+def insert_uploaded_alerts(run_id: str, rows: List[Dict[str, Any]]) -> None:
+    """Raises ValueError, storing nothing, for an id the run holds under another source.
+    The run's lock spans the check and the insert, or two uploads could both pass."""
+    sources = {r["alert_id"]: r["source"] for r in rows}
+    ids = list(sources)
+    with unit_of_work() as session:
+        _load(session, run_id, lock=True)
+        for start in range(0, len(ids), _CHUNK):
+            held = session.execute(
+                select(ColdStartAlert.alert_id, ColdStartAlert.source).where(
+                    ColdStartAlert.run_id == run_id,
+                    ColdStartAlert.alert_id.in_(ids[start : start + _CHUNK]),
+                )
             )
+            for alert_id, source in held:
+                if source != sources[alert_id]:
+                    raise ValueError(
+                        f"Alert id {alert_id} is already held from another source."
+                    )
+        _insert_alerts(session, run_id, rows)
 
 
 def insert_tickets(run_id: str, tickets: Iterable[Ticket]) -> None:

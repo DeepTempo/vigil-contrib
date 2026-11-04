@@ -171,6 +171,11 @@ Not exercised: a real SIEM (`scripts/coldstart/fake_elastic.py` is a test double
 LogLM inference (Parquet mapping is tested with fixture rows), and the baseline refreshing
 itself after go-live.
 
+A run holds one alert per id, because tickets name alerts by id with no source to tell two
+apart. An upload that reuses an id under another source is refused with a 400, since keeping
+either alert could hand it the other's tickets. A read from one adapter is taken to be one
+system and is not checked.
+
 The daemon's older poll loop reads a configured source at daemon start, before go-live, so
 "adds nothing to your queue" is about the build, not about a source already configured.
 A review saved while another run judges for longer than the 4-second wait applies when

@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 from core.coldstart import active, store
 from core.coldstart.baseline import parse_time
-from core.coldstart.collect import collect_history
+from core.coldstart.collect import alert_row, collect_history
 from core.coldstart.sample_history import FIXTURE, load_fixture
 from core.federation import store as federation_store
 from core.federation.registry import get_adapter
@@ -760,6 +760,82 @@ def test_sources_lists_what_can_run(client, analyst, fake_elastic):
     assert by_id["sample"]["configured"] and by_id["upload"]["kind"] == "upload"
     assert body["model"] is None
     assert body["loglm"] == {"configured": False, "connected": False}
+
+
+def test_two_uploads_racing_with_one_id_cannot_both_be_kept(client, analyst):
+    run_id = _start(client, source="upload")
+    for round_number in range(20):
+        ids = [f"{round_number}-{i}" for i in range(5)]
+        files = [
+            [alert_row(_upload_alert(i, "Port scan", source=src)) for i in ids]
+            for src in ("ids", "edr")
+        ]
+        barrier = threading.Barrier(2)
+        accepted = []
+
+        def upload(rows):
+            barrier.wait()
+            try:
+                store.insert_uploaded_alerts(run_id, rows)
+                accepted.append(rows[0]["source"])
+            except ValueError:
+                pass
+
+        threads = [threading.Thread(target=upload, args=(f,)) for f in files]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(accepted) == 1, f"round {round_number} accepted {accepted}"
+
+
+def _upload_alert(alert_id, title, source="ids"):
+    return {
+        "external_id": alert_id,
+        "title": title,
+        "severity": "low",
+        "source": source,
+        "timestamp": (NOW - timedelta(hours=1)).isoformat(),
+    }
+
+
+def test_judge_on_a_ready_run_takes_in_what_was_uploaded_since(client, analyst):
+    run_id = _start(client, source="upload")
+    first = _jsonl([_upload_alert("first", "First kind of alert")])
+    assert _upload(client, run_id, "alerts", "a.jsonl", first).status_code == 200
+    asked = []
+
+    async def records(*, message, **_):
+        asked.append(message)
+        return GOOD_REPLY
+
+    with patch("core.coldstart.runner.oneshot.complete", records):
+        assert client.post(f"{BASE}/runs/{run_id}/judge").status_code == 200
+        assert _wait(client, run_id)["status"] == "ready"
+        later = _jsonl([_upload_alert("later", "Later kind of alert")])
+        assert _upload(client, run_id, "alerts", "b.jsonl", later).status_code == 200
+        assert client.post(f"{BASE}/runs/{run_id}/judge").status_code == 200
+        assert _wait(client, run_id)["status"] == "ready"
+
+    assert len(asked) == 2 and "Later kind of alert" in asked[1]
+    window = _sql(
+        "SELECT in_review_window FROM cold_start_alerts WHERE alert_id = 'later'"
+    )
+    assert window[0][0] is True
+
+
+def test_an_upload_reusing_an_id_from_another_source_is_refused(client, analyst):
+    run_id = _start(client, source="upload")
+    ids = _jsonl([_upload_alert("17", "Port scan", source="ids")])
+    edr = _jsonl([_upload_alert("17", "Port scan", source="edr")])
+    assert _upload(client, run_id, "alerts", "a.jsonl", ids).status_code == 200
+    assert _upload(client, run_id, "alerts", "a.jsonl", ids).status_code == 200
+
+    refused = _upload(client, run_id, "alerts", "b.jsonl", edr)
+
+    assert refused.status_code == 400 and "17" in refused.json()["detail"]
+    held = _sql("SELECT source FROM cold_start_alerts WHERE run_id = :r", r=run_id)
+    assert [row[0] for row in held] == ["ids"]
 
 
 def test_sample_without_its_fixture_is_not_offered_and_cannot_start(client, analyst):

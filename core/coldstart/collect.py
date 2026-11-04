@@ -267,7 +267,7 @@ def parse_alert_file(path: Path, fmt: str, max_rows: int = MAX_ROWS) -> ParsedAl
     """Read an uploaded alert export. A file that cannot be read at all raises
     ValueError; one bad row in it is counted as unreadable."""
     parsed = ParsedAlerts()
-    seen: Set[str] = set()
+    seen: Dict[str, str] = {}
     try:
         for finding in _READERS[fmt](path, parsed.dropped):
             if not isinstance(finding, Mapping):
@@ -277,10 +277,17 @@ def parse_alert_file(path: Path, fmt: str, max_rows: int = MAX_ROWS) -> ParsedAl
             if row is None:
                 parsed.dropped[DROP_NO_TIME] += 1
             elif row["alert_id"] not in seen:
-                seen.add(row["alert_id"])
+                seen[row["alert_id"]] = row["source"]
                 parsed.rows.append(row)
                 if len(parsed.rows) >= max_rows:
                     break
+            elif seen[row["alert_id"]] != row["source"]:
+                # Tickets name alerts by id alone, so keeping one would hand it the
+                # other's tickets, and that can make a real alert look clean.
+                raise ValueError(
+                    f"Alert id {row['alert_id']} is used by both "
+                    f"{seen[row['alert_id']]} and {row['source']}."
+                )
     except (ValueError, csv.Error, OSError) as e:  # pyarrow's errors subclass these
         raise ValueError(f"Could not read the {fmt} file: {e}") from e
     return parsed
