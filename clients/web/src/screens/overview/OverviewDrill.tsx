@@ -103,6 +103,11 @@ const EMPTY: Record<string, string> = {
   scoring: 'Nothing is waiting to be scored. New alerts are usually scored within a minute of arriving, so this is often empty.',
   waiting: 'Every alert is in a case, queued or dropped.',
 }
+// A closed case stays closed, so a zero on Today says nothing about yesterday.
+const EMPTY_TODAY: Record<string, string> = {
+  resolved_auto: 'No case has been closed by an agent today.',
+  resolved_person: 'No analyst has closed a case today.',
+}
 
 const humanize = (name: string) =>
   !name.includes(' ') && name.includes('-') ? name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ') : name
@@ -226,7 +231,7 @@ export function OutcomePanel({
           <p className="ovd-explain">{shown.explain}</p>
           {state === 'needs_you' && canReadCases && <OpenDecisions openCase={openCase} />}
           {shown.total === 0 ? (
-            <p className="ovd-empty">{EMPTY[shown.state] ?? 'Nothing here today.'}</p>
+            <p className="ovd-empty">{(range === 'today' && EMPTY_TODAY[shown.state]) || EMPTY[shown.state] || 'Nothing here today.'}</p>
           ) : (
             <>
               {shown.by_source.length > 1 && (
