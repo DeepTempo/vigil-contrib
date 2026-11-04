@@ -289,7 +289,9 @@ function Connect({ sources, prefill, busy, error, onStart, goSettings }: Pick<Na
   const [historyDays, setHistoryDays] = useState(prefill?.historyDays ?? DEFAULT_HISTORY_DAYS)
   const [alerts, setAlerts] = useState<File | null>(null)
   const [tickets, setTickets] = useState<File | null>(null)
-  const needsFile = sources.sources.find((source) => source.id === picked)?.kind === 'upload'
+  // The sample fixture is not shipped, and picking it without the fixture could only fail.
+  const offered = sources.sources.filter((source) => source.kind !== 'sample' || source.configured)
+  const needsFile = offered.find((source) => source.id === picked)?.kind === 'upload'
   const canStart = picked !== null && (!needsFile || alerts !== null) && !busy
 
   return (
@@ -297,11 +299,11 @@ function Connect({ sources, prefill, busy, error, onStart, goSettings }: Pick<Na
       <h2>Where is your alert history?</h2>
       <p className="cs-muted" style={{ margin: 0 }}>Vigil builds a baseline from alerts you already have, so you do not wait weeks for one. Building it closes nothing and adds nothing to your queue.</p>
 
-      {sources.sources.length === 0 ? (
+      {offered.length === 0 ? (
         <div className="cs-card cs-note">No alert sources are available on this install.</div>
       ) : (
         <div className="cs-sources">
-          {sources.sources.map((source) => {
+          {offered.map((source) => {
             const copy = SOURCE_COPY[source.kind]
             if (source.kind === 'federation' && !source.configured) {
               return (
