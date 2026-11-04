@@ -12,6 +12,7 @@ export type ConsoleScreenKey =
   | 'health'
   | 'medic'
   | 'settings'
+  | 'start'
 
 /** A nav item carrying a gate only renders when the gate is satisfied. */
 export interface NavGate {
@@ -24,6 +25,7 @@ export const NAV: [IconName, string, ConsoleScreenKey, NavGate?][] = [
   ['home', 'Home', 'home'],
   ['graph', 'Overview', 'overview'],
   ['clock', 'Triage queue', 'triage'],
+  ['play', 'Day one setup', 'start'],
   ['grid', 'Findings', 'dashboard'],
   ['folder', 'Cases', 'cases'],
   ['bars', 'Case Metrics', 'metrics'],
@@ -121,4 +123,5 @@ export const TITLES: Record<ConsoleScreenKey, [string, string]> = {
   health: ['Health', 'Operational health — approvals waiting, recent workflow runs, probe scores'],
   medic: ['Medic', 'What Medic watches in this install, and the incidents it records'],
   settings: ['Settings', 'Configure Vigil — AI, integrations, users and platform'],
+  start: ['Day one setup', 'Build a baseline from the alert history you already have'],
 }

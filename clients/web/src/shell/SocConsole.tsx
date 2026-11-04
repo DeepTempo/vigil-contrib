@@ -45,6 +45,7 @@ import { ROUTABILITY_CHANGED } from '../screens/settings/routabilityChanged'
 import NotFoundScreen from '../screens/notfound/NotFoundScreen'
 import OverviewScreen from '../screens/overview/OverviewScreen'
 import TriageScreen from '../screens/triage/TriageScreen'
+import StartScreen from '../screens/coldstart/StartScreen'
 import { VigilLogo } from '../shared/VigilLogo'
 import {
   authBypassed,
@@ -57,7 +58,7 @@ import {
 } from './statusLine'
 
 // what a collapsed vertical tile shows under its icon, where the full label would not fit
-const TILE_LABELS: Record<string, string> = { triage: 'Triage', metrics: 'Metrics', workflows: 'Agents' }
+const TILE_LABELS: Record<string, string> = { start: 'Day one', triage: 'Triage', metrics: 'Metrics', workflows: 'Agents' }
 
 const AUTONOMY_ACT = 'Act · reversible changes on its own'
 const AUTONOMY_ASSIST = 'Assist · asks before changes'
@@ -73,6 +74,7 @@ const SCREENS: Record<ConsoleScreenKey, (props: ConsoleScreenProps) => JSX.Eleme
   health: HealthScreen,
   medic: MedicScreen,
   settings: SettingsScreen,
+  start: StartScreen,
 }
 
 /** What a widened dock leaves of the page beside it. */
