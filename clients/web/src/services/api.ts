@@ -156,6 +156,22 @@ export const approvalsApi = {
 /** how a findings read treats findings naming an analyst-excluded IP */
 export type ExclusionView = 'include' | 'hide' | 'only'
 
+export interface SimilarFinding {
+  finding_id: string
+  title: string
+  severity?: string | null
+  data_source?: string | null
+  timestamp?: string | null
+  score: number
+  reasons: string[]
+}
+export interface SimilarFindings {
+  finding_id: string
+  compared: number
+  method: string
+  similar: SimilarFinding[]
+}
+
 export const findingsApi = {
   getAll: (params?: {
     severity?: string
@@ -168,6 +184,10 @@ export const findingsApi = {
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   }, signal?: AbortSignal) => api.get('/findings', { params, signal }),
+  /** Recent findings that look like this one, each with why (shared host, user, behaviour). */
+  similar: (findingId: string, limit = 8) =>
+    // the first lookup after a restart embeds every recent alert
+    api.get<SimilarFindings>(`/findings/${encodeURIComponent(findingId)}/similar`, { params: { limit }, timeout: 60_000 }),
   
   getById: (id: string, signal?: AbortSignal) => api.get(`/findings/${id}`, { signal }),
   

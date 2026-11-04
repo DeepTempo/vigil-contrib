@@ -3900,6 +3900,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/findings/{finding_id}/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Similar Findings
+         * @description Recent findings that look like this one: same behaviour, same hosts, users or indicators.
+         *
+         *     Wording is compared with an embedding model on the local Ollama when it is
+         *     installed (``SIMILARITY_EMBED_MODEL``, default nomic-embed-text), else by
+         *     word overlap; ``method`` says which.
+         */
+        get: operations["get_api_findings_finding_id_similar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -18924,6 +18948,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NoiseMarkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_findings_finding_id_similar: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description How many recent findings to compare against */
+                window?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

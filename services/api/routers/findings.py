@@ -8,7 +8,7 @@ enrichment generation and the destructive wipe. They remain under
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -127,6 +127,66 @@ async def get_or_generate_enrichment(
         raise HTTPException(status_code=503, detail=str(e))
 
     return {"finding_id": finding_id, "cached": False, "enrichment": enrichment}
+
+
+@router.get("/{finding_id}/similar")
+async def similar_findings(
+    finding_id: str,
+    limit: int = Query(8, ge=1, le=25),
+    window: int = Query(500, ge=10, le=2000, description="How many recent findings to compare against"),
+):
+    """Recent findings that look like this one: same behaviour, same hosts, users or indicators.
+
+    Wording is compared with an embedding model on the local Ollama when it is
+    installed (``SIMILARITY_EMBED_MODEL``, default nomic-embed-text), else by
+    word overlap; ``method`` says which.
+    """
+    import asyncio
+    import os
+
+    from core.config import get_settings
+    from core.findings.similarity import candidate_from_row, ollama_embedder, similar
+
+    target = await asyncio.to_thread(data_service.get_finding, finding_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    # Analyst-excluded traffic and the daemon's probe findings are not alerts to take on.
+    rows = await asyncio.to_thread(data_service.get_findings, limit=window, exclusions="hide")
+    # Also the alerts from the 3 hours either side of this one, so an older
+    # alert still finds its neighbours once newer traffic fills the window.
+    ts = target.get("timestamp")
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts.replace("Z", ""))
+        except ValueError:
+            ts = None
+    if isinstance(ts, datetime):
+        ts = ts.replace(tzinfo=None)
+        near = await asyncio.to_thread(
+            data_service.get_findings,
+            limit=400,
+            timestamp_start=ts - timedelta(hours=3),
+            timestamp_end=ts + timedelta(hours=3),
+            exclusions="hide",
+        )
+        seen = {r.get("finding_id") for r in rows}
+        rows = rows + [r for r in near if r.get("finding_id") not in seen]
+    rows = [r for r in rows if r.get("data_source") != "probe"]
+    model = os.getenv("SIMILARITY_EMBED_MODEL", "nomic-embed-text")  # noqa: ENV001 - optional local embedding model
+    embed = ollama_embedder(get_settings().ollama_url, model)
+    target_c, pool = candidate_from_row(target), [candidate_from_row(r) for r in rows]
+    try:
+        # A slow-streaming Ollama can outlast the embedder's own budget; past
+        # 45 s (the console waits 60) answer by word overlap instead.
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                similar, target_c, pool, embed=embed, method_name=f"embeddings ({model})", limit=limit
+            ),
+            timeout=45,
+        )
+    except asyncio.TimeoutError:
+        result = await asyncio.to_thread(similar, target_c, pool, embed=None, limit=limit)
+    return {"finding_id": finding_id, "compared": len(rows), **result}
 
 
 @router.delete("/all", dependencies=[permission_gate("findings.delete")])

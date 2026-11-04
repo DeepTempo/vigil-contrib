@@ -1,4 +1,4 @@
-import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../../shared/icons'
 import { leaveUnsaved } from '../../shared/unsaved'
@@ -10,8 +10,9 @@ import { Markdown } from '../../shared/Markdown'
 import { type Workflow, type AgentTemplate, type Skill, prettyHandle, skillUsageText } from '../../data/appData'
 import { useWorkflows, useAgents, useAgentMeta, AgentRowsProvider, useSkills, workflowsOffered, modelSource, type Phase } from './useWorkflowsData'
 import { TITLES } from '../../data/data'
-import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport } from '../../services/api'
+import { approvalsApi, workflowApi, agentsApi, findingsApi, casesApi, type GeneratedDraft, type ReplayReport, type SimilarFinding } from '../../services/api'
 import DescribeDialog from './DescribeDialog'
+import SimilarAlerts, { relatedContext } from './SimilarAlerts'
 import WorkflowReaderPane from './WorkflowReaderPane'
 import WorkflowBuilder from './WorkflowBuilder'
 import CreateWorkflowDialog from './CreateWorkflowDialog'
@@ -903,6 +904,8 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
   const [limits, setLimits] = useState<WfLimits | null>(null)
   const [findingOpts, setFindingOpts] = useState<{ id: string; label: string }[]>([])
   const [caseOpts, setCaseOpts] = useState<{ id: string; label: string }[]>([])
+  const [related, setRelated] = useState<SimilarFinding[]>([])
+  const knownFindings = useMemo(() => new Set(findingOpts.map((o) => o.id)), [findingOpts])
 
   useEffect(() => {
     let cancelled = false
@@ -944,7 +947,7 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
   const params = {
     ...(findingId.trim() && { finding_id: findingId.trim() }),
     ...(caseId.trim() && { case_id: caseId.trim() }),
-    ...(context.trim() && { context: context.trim() }),
+    ...((context.trim() || related.length > 0) && { context: [context.trim(), relatedContext(related)].filter(Boolean).join('\n\n') }),
     ...(hypothesis.trim() && { hypothesis: hypothesis.trim() }),
   }
   const asked = subjectsAsked(hypothesis, subjects)
@@ -1043,7 +1046,8 @@ export function RunModal({ wf, agent = false, onStarted, onWatch, onClose }: {
         {(isHuntLike || isInvestigate) && (
           <Blindness unbound={limits?.capabilities?.unbound ?? []} investigation={isInvestigate} />
         )}
-        <ComboField label="Finding ID" value={findingId} onChange={setFindingId} placeholder="f-20260614-3b5c585e" options={findingOpts} hint={findingOpts.length ? `${findingOpts.length} recent findings, critical and high first — start typing to filter.` : undefined} />
+        <ComboField label="Finding ID" value={findingId} onChange={(v) => { setFindingId(v); setRelated([]) }} placeholder="f-20260614-3b5c585e" options={findingOpts} hint={findingOpts.length ? `${findingOpts.length} recent findings, critical and high first — start typing to filter.` : undefined} />
+        <SimilarAlerts findingId={findingId} known={knownFindings} picked={related} onChange={setRelated} />
         <ComboField label="Case ID" value={caseId} onChange={setCaseId} placeholder="case-2026-0142" options={caseOpts} />
         <Field label="Context" value={context} onChange={setContext} placeholder="Active ransomware on HOST-42…" textarea />
         {isHuntLike && (

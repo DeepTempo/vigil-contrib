@@ -7,6 +7,7 @@ import { NO_CONFIDENCE } from '../data/data'
 import { rankTechniques } from '../data/mappers'
 import { techniqueName } from '../data/mitre'
 import { useFindingEnrichment, type EnrichError, type Enrichment } from './useFindingEnrichment'
+import SimilarFindingsSection from './SimilarFindingsSection'
 
 interface FullFinding {
   finding_id: string
@@ -144,6 +145,8 @@ const FindingDetails = ({ findingId }: { findingId: string }) => {
           </dl>
         </section>
       )}
+
+      <SimilarFindingsSection findingId={findingId} />
     </div>
   )
 }
