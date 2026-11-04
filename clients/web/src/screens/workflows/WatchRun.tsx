@@ -46,7 +46,7 @@ const HUNT_LIKE_RUN_KINDS = ['hunt', 'adjudicate']
 export const STEP_MS = 1400
 export const UNSUPPORTED = 'Replay isn’t available for this kind of run yet.'
 export const AGENT_RUN = 'One agent works this on its own, with its own tools. Its report appears here when it finishes.'
-export const PLAYBOOK = 'A playbook runs its steps in order, one agent each, with no lead agent to watch. Each step’s report is in History.'
+export const PLAYBOOK = 'A playbook runs its steps in order, one agent each, with no lead agent to watch.'
 
 
 /** `threat-hunt` → "Threat hunt". A built-in carries its id as its name, so an id is read as words; a name with spaces is kept. */
@@ -67,7 +67,7 @@ function haltOf(d: WfRunDetail): Halt | null {
 const haltCaption = (h: Halt) =>
   h.kind === 'needs_you' ? 'Stopped · needs you'
     : h.kind === 'paused' ? (h.reason ? `Paused · ${h.reason}` : 'Paused')
-    : h.kind === 'rejected' ? `Rejected · ${h.reason || 'by a person'}`
+    : h.kind === 'rejected' ? h.reason || 'A person rejected a step.'
     : `Stopped · ${h.reason || h.kind}`
 const HALT_CLOCK: Record<Halt['kind'], string> = { needs_you: 'waiting on you', paused: 'paused', failed: 'stopped', cancelled: 'stopped', rejected: 'rejected' }
 const HALT_MARK: Record<Halt['kind'], Mark> = { needs_you: 'warn', paused: 'paused', failed: 'failed', cancelled: 'stopped', rejected: 'stopped' }
@@ -633,6 +633,8 @@ export function WatchRun({ d, onBack }: { d: WfRunDetail; onBack: () => void }) 
         <>
           <OneLine>{d.workflow_id?.startsWith('agent-run-') ? AGENT_RUN : PLAYBOOK}</OneLine>
           <WaitingOnPerson d={d} />
+          {halt && !cause && halt.kind !== 'paused' && <OneLine>{haltCaption(halt)}</OneLine>}
+          {d.status === 'completed' && !cause && <OneLine>Completed.</OneLine>}
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3.5 items-start">{d.phases?.length ? <PlaybookPanels d={d} /> : <OtherPanels d={d} />}</div>
           <PlaybookReport d={d} />
         </>
