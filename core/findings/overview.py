@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 FEED_LIMIT = 50
 RATE_WINDOW = timedelta(days=30)
+# Agents run on their own ("Run on an alert") are listed over the week, as the catalog counts runs.
+STANDALONE_WINDOW = timedelta(days=7)
 GOOD_AT = 0.95
 FAIR_AT = 0.85
 # budget_exhausted and data_starved are stored as completed (core/workflows/run_bridge_router.py).
@@ -100,7 +102,7 @@ def completion_level(sample: int, completed: int) -> Optional[str]:
 
 
 # These nodes open Cases, which lists cases; the node says how many its alerts are in.
-_CASE_STATES = frozenset(
+CASE_STATES = frozenset(
     {"needs_you", "working", "case_idle", "resolved_auto", "resolved_person"}
 )
 
@@ -120,7 +122,7 @@ def _outcome_nodes(states: list[dict], expired: int = 0) -> list[dict]:
             for row in states
             if row["terminal_state"] == state and row.get("case_id")
         }
-        for state in _CASE_STATES
+        for state in CASE_STATES
     }
     nodes = []
     for state in _LIVE_ORDER:
@@ -130,7 +132,7 @@ def _outcome_nodes(states: list[dict], expired: int = 0) -> list[dict]:
                 "state": state,
                 "label": _NODE_LABELS[state],
                 "count": counts.get(state, 0),
-                "case_count": len(cases[state]) if state in _CASE_STATES else None,
+                "case_count": len(cases[state]) if state in CASE_STATES else None,
                 "expired_count": expired if shows_expired else None,
                 "info": EXPIRED_INFO if shows_expired else None,
                 "unmeasured_text": None,
@@ -226,6 +228,7 @@ def _agent_rows(now: datetime) -> list[dict]:
                 "name": workflow.get("name") or workflow_id,
                 "running": running.get(workflow_id, 0),
                 "sample_size": sample,
+                "rejected": tally.get("rejected", 0),
                 "rate": None if sample == 0 else completed / sample,
                 "level": completion_level(sample, completed),
                 "current_step": steps.get(workflow_id),
@@ -297,11 +300,16 @@ def _feed_items(load) -> list[dict]:
 
 
 def _feed() -> list[dict]:
-    # excluded findings are hidden, as the findings queue hides them
+    # excluded findings are hidden, as the findings queue hides them, and the
+    # daemon's known-answer probes are checks on Vigil, not alerts
     return _feed_items(
         lambda session: session.query(Finding)
         .options(*_FEED_LOAD_OPTIONS)
-        .filter(Finding.noise_marked_at.is_(None), exclusion_view_filter("hide"))
+        .filter(
+            Finding.noise_marked_at.is_(None),
+            exclusion_view_filter("hide"),
+            Finding.data_source.is_distinct_from("probe"),
+        )
         .order_by(Finding.created_at.desc(), Finding.finding_id.desc())
         .limit(FEED_LIMIT)
         .all()
@@ -356,6 +364,50 @@ def overview_alert(finding_id: str) -> Optional[dict]:
     return items[0] if items else None
 
 
+def _standalone_rows(now: datetime) -> list[dict]:
+    """Agents with runs of their own in the last 7 days, in the agent cards' shape plus ``runs``."""
+    since = now - STANDALONE_WINDOW
+    db = get_db_manager()
+    with db.session_scope() as session:
+        rows = (
+            session.query(
+                WorkflowRun.workflow_id,
+                WorkflowRun.workflow_name,
+                RATED_STATUS,
+            )
+            .filter(
+                WorkflowRun.workflow_id.like(f"{AGENT_RUN_PREFIX}%"),
+                WorkflowRun.started_at >= since,
+                WorkflowRun.deleted_at.is_(None),
+            )
+            .all()
+        )
+    names: dict[str, str] = {}
+    by_state: dict[str, Counter[str]] = {}
+    for workflow_id, name, status in rows:
+        names[workflow_id] = (name or workflow_id).removesuffix(" on its own")
+        by_state.setdefault(workflow_id, Counter())[status] += 1
+    out = []
+    for workflow_id, tally in by_state.items():
+        completed = tally.get("completed", 0)
+        sample = completed + tally.get("failed", 0) + tally.get("cancelled", 0)
+        out.append(
+            {
+                "workflow_id": workflow_id,
+                "name": names[workflow_id],
+                "runs": sum(tally.values()),
+                "running": sum(tally.get(s, 0) for s in IN_FLIGHT_STATUSES),
+                "sample_size": sample,
+                "rejected": tally.get("rejected", 0),
+                "rate": None if sample == 0 else completed / sample,
+                "level": completion_level(sample, completed),
+                "current_step": None,
+            }
+        )
+    out.sort(key=lambda row: (-row["runs"], row["name"]))
+    return out
+
+
 def overview_payload(
     day: Optional[date] = None,
     now: Optional[datetime] = None,
@@ -408,7 +460,11 @@ def overview_payload(
         # Any finding at all, so Today with nothing yet still shows the diagram and its range control.
         any_finding = (
             arrival_total > 0
-            or session.query(Finding.finding_id).limit(1).first() is not None
+            or session.query(Finding.finding_id)
+            .filter(Finding.data_source.is_distinct_from("probe"))
+            .limit(1)
+            .first()
+            is not None
         )
     return {
         "day": day.isoformat(),
@@ -422,6 +478,7 @@ def overview_payload(
         "good_at": GOOD_AT,
         "fair_at": FAIR_AT,
         "agents": _agent_rows(now),
+        "standalone": _standalone_rows(now),
         "feed": _feed(),
         "feed_limit": FEED_LIMIT,
     }

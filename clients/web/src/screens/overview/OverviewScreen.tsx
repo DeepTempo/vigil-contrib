@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../../shared/icons'
 import { usePageSnapshot } from '../../shell/pageSnapshot'
 import AgentCards from './AgentCards'
 import AlertRail, { SevMark } from './AlertRail'
 import { clock } from './clock'
 import FlowDiagram from './FlowDiagram'
+import { AgentPanel, OutcomePanel } from './OverviewDrill'
 import { IntakeBanners } from '../../shared/AutoOpsOffBanner'
 import { useAutoOpsOff } from '../../shared/useAutoOpsOff'
 import { LevelBadge } from '../../shared/LevelBadge'
@@ -20,6 +21,7 @@ import { SourceEvidenceSection } from '../dashboard/SourceEvidenceSection'
 import { useJiraReadiness } from '../../shell/commandBarModel'
 import { holdCase } from '../../shell/heldCase'
 import {
+  approvalsApi,
   casesApi,
   findingsApi,
   overviewApi,
@@ -33,6 +35,8 @@ const NOISE_INFO =
   'The alert reads Dropped and leaves this feed and any read of open findings. Triage does not learn from the mark yet. Undo clears it.'
 
 const POLL_MS = 10_000
+// an agent's own run playbook, which the workflow catalog leaves out
+const AGENT_RUN = 'agent-run-'
 
 type Phase = 'loading' | 'error' | 'ready'
 // The single read of an alert that is not in the feed.
@@ -127,18 +131,44 @@ export default function OverviewScreen({ go, goSettings, openCase, setViewFull, 
   const readStatus = read?.id === alertId ? read.status : 'loading'
   const feedSettled = phase !== 'loading'
 
-  const setAlert = (id: string | null, state?: unknown) =>
+  // ?outcome= and ?agent= open what a click on the board shows, so Back and links work.
+  const outcomeOpen = searchParams.get('outcome') || null
+  const agentOpenId = searchParams.get('agent') || null
+  // A panel or popup opened here pushed its own history entry: closing it steps back over
+  // that entry, so one Back (or close) undoes one click instead of leaving a duplicate.
+  const navigate = useNavigate()
+  const pushed = useRef(new Set<string>())
+  useEffect(() => {
+    for (const key of [...pushed.current]) if (!searchParams.get(key)) pushed.current.delete(key)
+  }, [searchParams])
+  const setKey = (key: 'outcome' | 'agent' | 'alert', value: string | null, state?: unknown) => {
+    if (value === null && pushed.current.has(key)) {
+      pushed.current.delete(key)
+      navigate(-1)
+      return
+    }
+    if (value && !searchParams.get(key)) pushed.current.add(key)
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev)
-        if (id) next.set('alert', id)
-        else next.delete('alert')
+        if (value) next.set(key, value)
+        else next.delete(key)
         return next
       },
-      { replace: id === null, state },
+      { replace: value === null, state },
     )
+  }
+  const setParam = (key: 'outcome' | 'agent', value: string | null) => setKey(key, value)
 
+  const setAlert = (id: string | null) => setKey('alert', id)
+
+  const [decisions, setDecisions] = useState<number | null>(null)
   const load = useCallback(() => {
+    // The header's count, so the board can say how today's Needs you relates to it.
+    approvalsApi
+      .needsYou()
+      .then((res) => setDecisions(res.data.count))
+      .catch(() => setDecisions(null))
     overviewApi
       .get(range)
       .then((res) => {
@@ -226,8 +256,16 @@ export default function OverviewScreen({ go, goSettings, openCase, setViewFull, 
   const sourceLabel = open ? badgeOf(open.data_source).label : ''
 
   // One overlay at a time, in one navigation: a second navigate in the same click starts from the
-  // location this render saw, so it would undo the first.
-  const openCaseFromPopup = (id: string) => setAlert(null, holdCase(location.state, id))
+  // location this render saw, so it would undo the first. The case drawer replaces the alert and any board panel.
+  const openCaseFromPopup = (id: string) =>
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        for (const key of ['alert', 'outcome', 'agent']) next.delete(key)
+        return next
+      },
+      { replace: true, state: holdCase(location.state, id) },
+    )
 
   const stillOpen = (findingId: string) => openId.current === findingId
 
@@ -323,8 +361,8 @@ export default function OverviewScreen({ go, goSettings, openCase, setViewFull, 
       {phase === 'ready' && data && (
         <>
           <IntakeBanners autoOpsOff={autoOpsOff} goSettings={goSettings} />
-          <FlowDiagram data={data} wall={wall} onToggleWall={toggleWall} range={range} onRange={setRange} />
-          {!wall && <AgentCards data={data} go={go} autoOpsOff={autoOpsOff} />}
+          <FlowDiagram data={data} wall={wall} onToggleWall={toggleWall} range={range} onRange={setRange} onOutcome={(state) => setParam('outcome', state)} decisions={decisions} />
+          {!wall && <AgentCards data={data} go={go} autoOpsOff={autoOpsOff} onOpen={(a) => setParam('agent', a.workflow_id)} />}
         </>
       )}
       </div>
@@ -332,6 +370,22 @@ export default function OverviewScreen({ go, goSettings, openCase, setViewFull, 
       {phase === 'ready' && data && !chatOpen && (
         <AlertRail data={data} range={range} paused={paused} onTogglePause={() => setPaused((p) => !p)} onOpen={setAlert} openCase={openCase} />
       )}
+
+      <OutcomePanel
+        state={outcomeOpen}
+        range={range}
+        onClose={() => setParam('outcome', null)}
+        onOpenAlert={setAlert}
+        openCase={openCaseFromPopup}
+
+      />
+      <AgentPanel
+        agent={agentOpenId ? [...(data?.agents ?? []), ...(data?.standalone ?? [])].find((a) => a.workflow_id === agentOpenId) ?? null : null}
+        onClose={() => setParam('agent', null)}
+        openCase={openCaseFromPopup}
+        openWorkflow={(id) => go('workflows', { search: id.startsWith(AGENT_RUN) ? `?tab=agents&agent=${encodeURIComponent(id.slice(AGENT_RUN.length))}` : `?workflow=${encodeURIComponent(id)}` })}
+        openRun={(id) => go('workflows', { search: `?run=${encodeURIComponent(id)}` })}
+      />
 
       <Popup open={alertId !== null} onClose={() => setAlert(null)} title={open ? <PopupTitle item={open} /> : (alertId ?? 'Alert')} width={860}>
         {!open && readStatus === 'missing' && <p>Alert {alertId} not found.</p>}

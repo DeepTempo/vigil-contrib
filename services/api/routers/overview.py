@@ -40,6 +40,7 @@ async def get_overview(
         missing.append("findings.read")
     if missing_permission(user.user_id, "automation.read"):
         payload["agents"] = []
+        payload["standalone"] = []
         missing.append("automation.read")
     if missing:
         payload["missing"] = missing

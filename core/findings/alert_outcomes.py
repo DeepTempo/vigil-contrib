@@ -215,7 +215,10 @@ def terminal_states_today(
     """One row per finding created that day, or ever with ``all_time``: id, source, one state, and the case it reads."""
     db = get_db_manager()
     with db.session_scope() as session:
-        query = session.query(Finding.finding_id, Finding.data_source)
+        # probes are the daemon checking itself, not alerts with an outcome
+        query = session.query(Finding.finding_id, Finding.data_source).filter(
+            Finding.data_source.is_distinct_from("probe")
+        )
         if not all_time:
             start, end = utc_day_bounds(day)
             query = query.filter(Finding.created_at >= start, Finding.created_at < end)

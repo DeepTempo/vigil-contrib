@@ -7,6 +7,10 @@ import type { OverviewAgent, OverviewPayload } from '../../services/api'
 
 const CONNECT_DATA = '/settings?section=data'
 
+// A built-in workflow's name is its id ("incident-response"): read it as words
+const named = (name: string) =>
+  !name.includes(' ') && name.includes('-') ? name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ') : name
+
 const pct = (n: number) => Math.round(n * 100)
 
 function fmtRate(rate: number | null): string {
@@ -14,21 +18,27 @@ function fmtRate(rate: number | null): string {
   return `${(rate * 100).toFixed(1)}%`
 }
 
-// One agent run alone has no workflow to open, so its card opens the agent
-const AGENT_RUN = 'agent-run-'
-const agentHref = (id: string) => id.startsWith(AGENT_RUN)
-  ? `/workflows?tab=agents&agent=${encodeURIComponent(id.slice(AGENT_RUN.length))}`
-  : `/workflows?workflow=${encodeURIComponent(id)}`
-
-/** The name links to the workflow on Agents & workflows; the link covers the card. */
-function AgentCard({ agent }: { agent: OverviewAgent }) {
+function AgentCard({ agent, onOpen }: { agent: OverviewAgent; onOpen?: (agent: OverviewAgent) => void }) {
   const doing = agent.current_step ? `${agent.running} running · ${agent.current_step}` : `${agent.running} running`
   const measured = agent.sample_size > 0 && agent.level !== null
   return (
-    <div role="listitem" className={`ov-agent${agent.level === 'fair' || agent.level === 'poor' ? ` ${agent.level}` : ''}`}>
-      <b title={agent.name}>
-        <Link className="ov-agent-open" to={agentHref(agent.workflow_id)}>{agent.name}</Link>
-      </b>
+    <div
+      role="listitem"
+      className={`ov-agent${agent.level === 'fair' || agent.level === 'poor' ? ` ${agent.level}` : ''}${onOpen ? ' clickable' : ''}`}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? `${agent.name}: show what it does and its runs` : undefined}
+      onClick={onOpen ? () => onOpen(agent) : undefined}
+      onKeyDown={
+        onOpen
+          ? (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              onOpen(agent)
+            }
+          : undefined
+      }
+    >
+      <b title={named(agent.name)}>{named(agent.name)}</b>
       <span className="ov-agent-doing" title={doing}>{doing}</span>
       <div className="ov-agent-rate">
         {measured ? (
@@ -39,13 +49,24 @@ function AgentCard({ agent }: { agent: OverviewAgent }) {
         ) : (
           <span title="No finished runs in the last 30 days">—</span>
         )}
+        {(agent.rejected ?? 0) > 0 && <span className="ov-agent-rejected" title="Stopped by a person at an approval; not counted in the rate">{agent.rejected} rejected</span>}
       </div>
     </div>
   )
 }
 
 /** "Agents running now": one card per workflow, with its level pill and 30-day rate. */
-export default function AgentCards({ data, go, autoOpsOff }: { data: OverviewPayload; autoOpsOff: boolean | null } & Pick<ConsoleScreenProps, 'go'>) {
+export default function AgentCards({
+  data,
+  go,
+  autoOpsOff,
+  onOpen,
+}: {
+  data: OverviewPayload
+  autoOpsOff: boolean | null
+  /** Opens one agent's record. */
+  onOpen?: (agent: OverviewAgent) => void
+} & Pick<ConsoleScreenProps, 'go'>) {
   const agents = [...data.agents].sort((a, b) => b.running - a.running || a.name.localeCompare(b.name))
   const idle = agents.every((a) => a.running === 0 && a.sample_size === 0)
   return (
@@ -85,7 +106,22 @@ export default function AgentCards({ data, go, autoOpsOff }: { data: OverviewPay
         </div>
       ) : (
         <div className="ov-agents-grid" role="list">
-          {agents.map((a) => <AgentCard key={a.workflow_id} agent={a} />)}
+          {agents.map((a) => <AgentCard key={a.workflow_id} agent={a} onOpen={onOpen} />)}
+        </div>
+      )}
+      {(data.standalone ?? []).length > 0 && (
+        <div className="ov-standalone" role="list" aria-label="Agents run on their own">
+          <span className="ov-standalone-t">Agents run on their own, last 7 days</span>
+          {data.standalone!.map((a) => (
+            <button key={a.workflow_id} type="button" role="listitem" className="ov-standalone-a" onClick={() => onOpen?.(a)} aria-label={`${a.name}: show its runs`}>
+              <b>{a.name}</b>
+              <span>
+                Ran {a.runs} {a.runs === 1 ? 'time' : 'times'}
+                {a.rate !== null && ` · ${(a.rate * 100).toFixed(1)}% succeeded`}
+                {a.rejected ? ` · ${a.rejected} rejected` : ''}
+              </span>
+            </button>
+          ))}
         </div>
       )}
     </section>

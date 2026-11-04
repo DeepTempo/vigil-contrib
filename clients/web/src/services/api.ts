@@ -1550,6 +1550,8 @@ export interface OverviewAgent {
   name: string
   running: number
   sample_size: number
+  /** runs a person stopped at an approval, outside the rate */
+  rejected?: number
   rate: number | null
   level: 'good' | 'fair' | 'poor' | null
   current_step: string | null
@@ -1584,6 +1586,8 @@ export interface OverviewPayload {
   good_at: number
   fair_at: number
   agents: OverviewAgent[]
+  /** agents run on their own in the last 7 days, busiest first */
+  standalone?: (OverviewAgent & { runs: number })[]
   feed: OverviewFeedItem[]
   feed_limit: number
   // Set when the role lacks a read: that part is empty and this names it.

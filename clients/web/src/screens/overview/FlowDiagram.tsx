@@ -40,7 +40,7 @@ const OUTCOME_COLOR: Record<string, string> = {
 }
 // OV-P1: where a populated outcome's count opens, and what it opens. Outcomes in a case open
 // Cases on the matching chip; the others open the Triage queue on the matching state.
-const OUTCOME_LINK: Record<string, [string, string]> = {
+export const OUTCOME_LINK: Record<string, [string, string]> = {
   resolved_auto: ['/cases?state=closed&closed_by=agent', 'Opens the cases closed without a person'],
   resolved_person: ['/cases?state=closed&closed_by=person', 'Opens the cases a person closed'],
   working: ['/cases?working=1', 'Opens the open cases that do not need you'],
@@ -59,6 +59,19 @@ const SLOTS: { label: string; sub: string; icon: IconName }[] = [
 ]
 
 type Hover = { kind: 'src' | 'out'; key: string } | null
+
+/**
+ * Needs you counts today's alerts; the header counts decisions from any day. When the two differ,
+ * the row says so, so "0 Needs you" beside "3 decisions wait on you" reads as consistent.
+ */
+function subLine(o: OverviewOutcome & { count: number }, decisions: number | null): string | undefined {
+  if (o.state === 'needs_you' && decisions !== null && decisions !== o.count && decisions > 0) {
+    return `${decisions} decision${decisions === 1 ? '' : 's'} open, any day`
+  }
+  if (CASE_NODES.has(o.state) && o.case_count !== null) return cases(o.case_count)
+  if (o.expired_count !== null) return `${fmt(o.expired_count)} expired`
+  return undefined
+}
 interface SrcNode { key: string; label: string; icon: IconName; logo?: string; count: number; href: string | null }
 
 const fmt = (n: number) => n.toLocaleString('en-US')
@@ -139,11 +152,15 @@ interface Props {
   data: OverviewPayload
   wall: boolean
   onToggleWall: () => void
+  /** Opens the alerts behind an outcome. */
+  onOutcome?: (state: string) => void
+  /** Decisions waiting on a person from any day, as the header counts them. */
+  decisions?: number | null
   range: CountRange
   onRange: (next: CountRange) => void
 }
 
-export default function FlowDiagram({ data, wall, onToggleWall, range, onRange }: Props) {
+export default function FlowDiagram({ data, wall, onToggleWall, range, onRange, onOutcome, decisions = null }: Props) {
   const badgeOf = useSourceBadge()
   const uid = useId().replace(/:/g, '')
   const [ref, W, measuredH, bar] = useSize()
@@ -320,6 +337,7 @@ export default function FlowDiagram({ data, wall, onToggleWall, range, onRange }
                         fill={`url(#${uid}-${b.o.state})`}
                         onMouseEnter={() => setHover({ kind: 'out', key: b.o.state })}
                         onMouseLeave={leave}
+                        onClick={onOutcome ? () => onOutcome(b.o.state) : undefined}
                       />
                     ) : (
                       <path d={b.zero} className="ov-zero" />
@@ -428,32 +446,39 @@ export default function FlowDiagram({ data, wall, onToggleWall, range, onRange }
                   </div>
                 ))
             : bands.map((b) => {
-                const link = b.o.count > 0 ? OUTCOME_LINK[b.o.state] : undefined
-                const sub =
-                  CASE_NODES.has(b.o.state) && b.o.case_count !== null
-                    ? cases(b.o.case_count)
-                    : b.o.expired_count !== null
-                      ? `${fmt(b.o.expired_count)} expired`
-                      : undefined
+                // the board opens this outcome's own alerts, whose panel carries main's link
+                const link = !onOutcome && b.o.count > 0 ? OUTCOME_LINK[b.o.state] : undefined
+                const sub = subLine(b.o, decisions)
                 const head = (
                   <>
-                    <b style={{ color: b.color }}>{fmt(b.o.count)}</b>
+                    <b style={{ color: b.o.count === 0 ? undefined : b.color }}>{fmt(b.o.count)}</b>
                     <span>{b.o.label}</span>
                   </>
                 )
                 return (
                   <div
                     key={b.o.state}
-                    className="ov-out"
-                    role="group"
+                    className={`ov-out${onOutcome ? ' clickable' : ''}${b.o.count === 0 ? ' zero' : ''}`}
+                    role={onOutcome ? 'button' : 'group'}
                     // a linked count takes the focus itself
                     tabIndex={link ? undefined : 0}
                     aria-label={b.o.label}
+                    title={onOutcome ? `Show the ${alerts(b.o.count)} that ${b.o.count === 1 ? 'is' : 'are'} ${b.o.label.toLowerCase()} ${when}` : undefined}
                     style={{ left: x2 + 14, top: b.y - 19, opacity: outDim(b.o.state) }}
                     onMouseEnter={() => setHover({ kind: 'out', key: b.o.state })}
                     onMouseLeave={leave}
                     onFocus={() => setHover({ kind: 'out', key: b.o.state })}
                     onBlur={leave}
+                    onClick={(e) => {
+                      // The info tip inside the row is its own button.
+                      if (!onOutcome || (e.target as HTMLElement).closest('button')) return
+                      onOutcome(b.o.state)
+                    }}
+                    onKeyDown={(e) => {
+                      if (!onOutcome || e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+                      e.preventDefault()
+                      onOutcome(b.o.state)
+                    }}
                   >
                     {link ? (
                       <Link to={linkTo(link[0])} className="ov-out-l" title={`${b.o.label}: ${alerts(b.o.count)} ${when}. ${linkTitle(link[0], link[1])}`}>
