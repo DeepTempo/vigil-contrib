@@ -4,6 +4,7 @@ import { formatDistanceToNowStrict } from 'date-fns'
 import { Icon } from '../../shared/icons'
 import { Markdown } from '../../shared/Markdown'
 import { Toggle } from '../../shared/ui'
+import { useAuth } from '../../contexts/AuthContext'
 import type { Workflow } from '../../data/appData'
 import { workflowApi } from '../../services/api'
 import { modelSource, useAgentMeta } from './useWorkflowsData'
@@ -481,6 +482,9 @@ function WatchButton({ wf }: { wf: Workflow }) {
 }
 
 function Header({ name, wf, actions, definition, onSave, onChangeDescription }: { name: string; wf: Workflow | null; actions: ReaderActions | null; definition: Definition; onSave?: () => Promise<unknown>; onChangeDescription?: () => void }) {
+  const { hasPermission } = useAuth()
+  const canBuild = hasPermission('automation.write')
+  const canRun = hasPermission('ai_chat.use')
   // optimistic, dropped once the list reads the row again
   const [now, setNow] = useState<boolean | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -546,13 +550,13 @@ function Header({ name, wf, actions, definition, onSave, onChangeDescription }: 
         <div className="flex items-center gap-2 shrink-0">
           <WatchButton wf={wf} />
           <button className="btn ghost" onClick={actions.onHistory}><Icon name="clock" /> History</button>
-          {wf.source === 'custom' && (
+          {wf.source === 'custom' && canBuild && (
             <>
               <button className="btn ghost icon" title="Edit workflow" onClick={actions.onEdit}><Icon name="edit" /></button>
               <button className="btn ghost icon danger" title="Delete workflow" onClick={actions.onDelete}><Icon name="trash" /></button>
             </>
           )}
-          <button className="btn primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!enabled} title={enabled ? undefined : 'Turn it on to run it'} onClick={actions.onRun}><Icon name="play" /> Run workflow</button>
+          <button className="btn primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!enabled || !canRun} title={!canRun ? 'Your role cannot run workflows' : enabled ? undefined : 'Turn it on to run it'} onClick={actions.onRun}><Icon name="play" /> Run workflow</button>
         </div>
       )}
     </div>

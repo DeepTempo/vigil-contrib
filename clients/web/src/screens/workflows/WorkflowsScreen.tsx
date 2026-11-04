@@ -78,6 +78,7 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
   // a link followed while the screen is open names its tab again
   useEffect(() => setTab(tabFrom(searchParams.get('tab'))), [searchParams])
   // lifted so the header's "New workflow" opens the same dialog from any tab; the text it opens with, null when closed
+  const canBuild = useAuth().hasPermission('automation.write')
   const [choosing, setChoosing] = useState(false)
   const [describing, setDescribing] = useState<string | null>(null)
   const [building, setBuilding] = useState<Building | null>(null)
@@ -110,7 +111,7 @@ export default function WorkflowsScreen({ goSettings }: ConsoleScreenProps) {
             <h1 className="m-0 text-[20px] leading-[1.25] tracking-[-0.2px] text-tx" style={{ fontWeight: 700 }}>{PAGE_TITLE}</h1>
             <p className="m-0 text-[13px] leading-[1.5] text-tx-2 max-w-[760px]">{PAGE_DESC}</p>
           </div>
-          <button className="btn primary wf-new" onClick={() => setChoosing(true)}><Icon name="plus" /> New workflow</button>
+          {canBuild && <button className="btn primary wf-new" onClick={() => setChoosing(true)}><Icon name="plus" /> New workflow</button>}
         </div>
         <div className="wf-tabs" role="tablist" aria-label="Workflow views">
           {tabs.map(([k, label, n]) => (
@@ -329,6 +330,7 @@ function WorkflowCatalog({ feed, onCreate, onDescribe, onEdit, goSettings }: {
   goSettings: ConsoleScreenProps['goSettings']
 }) {
   const { rows, phase, error, reload } = feed
+  const canBuild = useAuth().hasPermission('automation.write')
   const [modal, setModal] = useState<WfModal | null>(null)
   // the pane replaces the table; read from the rows so an edit or a delete shows in it
   const [openId, setOpenId] = useOpenItem('workflow', 'workflows')
@@ -348,8 +350,8 @@ function WorkflowCatalog({ feed, onCreate, onDescribe, onEdit, goSettings }: {
             icon="flow"
             title="No workflows yet"
             body="Build one step by step, start from a template, or describe it and let Vigil draft the steps."
-            primary={{ label: 'New workflow', onClick: onCreate, icon: 'plus' }}
-            secondary={{ label: 'Describe one', onClick: onDescribe, icon: 'sparkle' }}
+            primary={canBuild ? { label: 'New workflow', onClick: onCreate, icon: 'plus' } : undefined}
+            secondary={canBuild ? { label: 'Describe one', onClick: onDescribe, icon: 'sparkle' } : undefined}
           />
         </StateMsg>
       )}
@@ -359,14 +361,14 @@ function WorkflowCatalog({ feed, onCreate, onDescribe, onEdit, goSettings }: {
             {list.map((w) => (
               <WorkflowCard key={w.id} wf={w} selected={shown?.id === w.id} onSelect={() => setOpenId(w.id)} />
             ))}
-            <div className="wfk-new">
+            {canBuild && <div className="wfk-new">
               <span className="text-[13px] font-semibold leading-[1.35] text-tx">Make your own</span>
               <span className="text-[12px] leading-[1.45] text-tx-2">Build it step by step, start from a template, or describe it and Vigil drafts the steps for you to check.</span>
               <span className="flex flex-wrap gap-2">
                 <button className="btn primary wfk-btn" onClick={onCreate}><Icon name="plus" /> New workflow</button>
                 <button className="btn ghost wfk-btn" onClick={onDescribe}><Icon name="sparkle" /> Describe one</button>
               </span>
-            </div>
+            </div>}
           </div>
           {shown && (
             <div className="wfk-reader">
