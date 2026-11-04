@@ -346,8 +346,9 @@ export default function CommandBar({
 
   const follow = useCallback((row: PaletteRow) => {
     if (row.dest === 'Recent' && row.recent) {
+      // An unchanged query starts no new search, so its rows have to stay.
+      if (row.recent !== query) setHits(null)
       setQuery(row.recent)
-      setHits(null)
       setOpen(true)
       setActive(null)
       return
