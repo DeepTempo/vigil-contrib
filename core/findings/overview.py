@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import and_, case, exists
+from sqlalchemy.orm import noload
 
 from core.findings.alert_outcomes import (
     TERMINAL_LABELS,
@@ -73,6 +74,7 @@ _LIVE_ORDER = (
     "resolved_auto",
     "resolved_person",
     "working",
+    "case_idle",
     "needs_you",
     "dismissed",
     "excluded",
@@ -117,7 +119,9 @@ def completion_level(sample: int, completed: int) -> Optional[str]:
 
 
 # These nodes open Cases, which lists cases; the node says how many its alerts are in.
-_CASE_STATES = frozenset({"needs_you", "working", "resolved_auto", "resolved_person"})
+_CASE_STATES = frozenset(
+    {"needs_you", "working", "case_idle", "resolved_auto", "resolved_person"}
+)
 
 
 def _expired_among(states: list[dict]) -> int:
@@ -250,6 +254,14 @@ def _agent_rows(now: datetime) -> list[dict]:
     return rows
 
 
+# The feed never reads ``finding.cases``; its ``lazy="selectin"`` default would
+# SELECT every linked case row, all of its JSONB, once per finding (#3656).
+_FEED_LOAD_OPTIONS = (
+    noload(Finding.cases),
+    noload(Finding.mitre_prediction_rows),
+)
+
+
 def _feed_items(load) -> list[dict]:
     """Feed items for the findings ``load(session)`` returns; one body for the feed and the single read."""
     db = get_db_manager()
@@ -307,6 +319,7 @@ def _feed() -> list[dict]:
     # excluded findings are hidden, as the findings queue hides them
     return _feed_items(
         lambda session: session.query(Finding)
+        .options(*_FEED_LOAD_OPTIONS)
         .filter(Finding.noise_marked_at.is_(None), exclusion_view_filter("hide"))
         .order_by(Finding.created_at.desc(), Finding.finding_id.desc())
         .limit(FEED_LIMIT)
@@ -355,6 +368,7 @@ def overview_alert(finding_id: str) -> Optional[dict]:
         return demo_alert(findings, cases, finding_id)
     items = _feed_items(
         lambda session: session.query(Finding)
+        .options(*_FEED_LOAD_OPTIONS)
         .filter(Finding.finding_id == finding_id)
         .all()
     )

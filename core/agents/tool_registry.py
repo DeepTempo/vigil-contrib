@@ -57,6 +57,7 @@ TOOL_PERMISSIONS: Dict[str, str] = {
     "lint_detections": "detections.read",
     "check_detection_candidate": "detections.read",
     "reconstruct_run": "detections.read",
+    "link_detection_rule": "detections.write",
     "list_findings": "findings.read",
     "search_findings": "findings.read",
     "get_findings_stats": "findings.read",
@@ -182,9 +183,9 @@ def _bad_state(state: Optional[str]) -> Optional[Args]:
 
 
 def _data():
-    from core.storage.database_data_service import DatabaseDataService
+    from core.storage.database_data_service import get_database_data_service
 
-    return DatabaseDataService()
+    return get_database_data_service()
 
 
 def _approvals():
@@ -413,20 +414,11 @@ def list_cases(
     priority: Optional[str] = None,
     limit: int = 50,
 ) -> Any:
-    # get_cases takes only a cap, so the filter runs after the full read.
-    # A cap applied first (limit*2) drops matches that sit past it.
-    cases = _data().get_cases()
-    if status:
-        cases = [case for case in cases if case.get("status") == status]
-    if severity:
-        cases = [
-            case
-            for case in cases
-            if case.get("severity") == severity or case.get("priority") == severity
-        ]
-    if priority:
-        cases = [case for case in cases if case.get("priority") == priority]
-    return cases[:limit]
+    # Cases have no severity column: severity names a priority, so both
+    # filters, and the cap, run in SQL. Two different priorities match nothing.
+    if severity and priority and severity != priority:
+        return []
+    return _data().get_cases(limit=limit, status=status, priority=priority or severity)
 
 
 def get_case(*, case_id: str) -> Any:
@@ -591,9 +583,7 @@ def _case_records(args: Args) -> Args:
         )
         total = on_case.with_entities(func.count()).scalar() or 0
         page = (
-            on_case.options(
-                noload(Finding.cases), noload(Finding.mitre_prediction_rows)
-            )
+            on_case.options(noload(Finding.mitre_prediction_rows))
             .order_by(Finding.timestamp.desc().nulls_last(), Finding.finding_id)
             .offset(offset)
             .limit(limit)
@@ -812,6 +802,7 @@ _SECURITY_TOOLS = frozenset(
         "lint_detections",
         "check_detection_candidate",
         "reconstruct_run",
+        "link_detection_rule",
     }
 )
 

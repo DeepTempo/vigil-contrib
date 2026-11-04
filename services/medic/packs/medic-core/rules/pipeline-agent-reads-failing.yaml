@@ -1,0 +1,61 @@
+# P-1: reads of the agent service fail (core/agents/projections.py, _note_read). The
+# ERROR is logged once when reads start failing; later failures are DEBUG until the
+# INFO "agent service reads recovered", which is logged on a process's first
+# successful read as well as on a success after a failure, so a restart after the
+# fix clears the incident. The backend (workflows_router, case_brief,
+# learning_episodes) and soc-daemon (distil_once -> read_distil) both import that
+# module and each keeps its own _read_failing, so two latches: one per stream.
+# Both failing-read templates are %-style catalog entries; the recovery is a
+# constant-text catalog line. Latch-only. A latch clears on that process's next
+# successful read, which on an idle install is the next run lookup. A healthy start
+# logs one recovery with no earlier failure; a clear with no set leaves the latch false.
+apiVersion: medic.rules/v1
+kind: Rule
+id: pipeline.agent-reads-failing
+title: Vigil can't read run status from the agent service
+revision: 2
+fault: {class: pipeline, mode: P-1, causes: [P-1]}
+lane: 3
+detection: event
+signals:
+  backend_down:
+    log:
+      signal: log_backend
+      logger: {eq: core.agents.projections}
+      level: [ERROR]
+      template: {re2: '^(could not read the %s for %s: %s|%s for %s answered %s)$'}
+  backend_up:
+    log:
+      signal: log_backend
+      logger: {eq: core.agents.projections}
+      level: [INFO]
+      template: {eq: agent service reads recovered}
+  daemon_down:
+    log:
+      signal: log_soc_daemon
+      logger: {eq: core.agents.projections}
+      level: [ERROR]
+      template: {re2: '^(could not read the %s for %s: %s|%s for %s answered %s)$'}
+  daemon_up:
+    log:
+      signal: log_soc_daemon
+      logger: {eq: core.agents.projections}
+      level: [INFO]
+      template: {eq: agent service reads recovered}
+when:
+  any:
+    - {fn: latch, set: backend_down, clear: backend_up}
+    - {fn: latch, set: daemon_down, clear: daemon_up}
+for: 2m
+keep_firing_for: 5m
+advice:
+  summary: The backend or soc-daemon can't read run status from the agent service, so run progress, case briefs and learning reads come back empty.
+  fix: >-
+    Check that the agent service is running and that the backend and soc-daemon
+    can reach it: AGENT_URL and AGENT_INTERNAL_TOKEN must match on all three
+    (Compose: the agent-serve container; Helm: the agent Service). If a not-ready
+    incident for agent-serve is open, fix that first. Otherwise report it as a
+    Vigil defect with this incident and attach the backend log, which names the
+    error. The incident clears on the first successful read of
+    the service that logged the failure, including right after a restart, so on an
+    idle install it can outlast the fix until the next run lookup.

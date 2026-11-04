@@ -27,8 +27,9 @@ from sqlalchemy import (
     literal,
     null,
 )
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, noload
 
+from core.agents.projections import run_id_for
 from core.federation.lag import source_collection_lag
 from core.findings.alert_outcomes import _cases_for, alert_group
 from core.findings.arrival_counts import arrivals_today_by_source, utc_day_bounds
@@ -40,6 +41,7 @@ from core.storage.models import (
     Finding,
     IntakeTrigger,
     Investigation,
+    WorkflowRun,
 )
 from core.storage.shared_ioc_repository import CaseMatch
 from core.time import utcnow
@@ -445,8 +447,12 @@ def _load(
     finding_ids = {fid for _row_id, fid, _state in keys if fid}
     findings: dict[str, dict] = {}
     if finding_ids:
-        for finding in session.query(Finding).filter(
-            Finding.finding_id.in_(finding_ids)
+        # Triage never reads ``Finding.cases``; ``noload`` keeps it from loading
+        # each linked case's JSONB (#3656).
+        for finding in (
+            session.query(Finding)
+            .options(noload(Finding.cases), noload(Finding.mitre_prediction_rows))
+            .filter(Finding.finding_id.in_(finding_ids))
         ):
             findings[finding.finding_id] = {
                 "finding_id": finding.finding_id,
@@ -477,6 +483,17 @@ def _load(
             .all()
         ):
             workflows[inv_id] = workflow_id
+    # A run id is derived from the investigation, so only a recorded run earns a door.
+    derived = {inv_id: run_id_for(inv_id) for inv_id in inv_ids}
+    recorded: set[str] = set()
+    if derived:
+        recorded = {
+            run_id
+            for (run_id,) in session.query(WorkflowRun.run_id).filter(
+                WorkflowRun.run_id.in_(derived.values()),
+                WorkflowRun.deleted_at.is_(None),
+            )
+        }
     merged = {row.merged_into for row in triggers if row.merged_into}
     activities: dict[str, list] = {}
     if merged:
@@ -516,6 +533,11 @@ def _load(
                 "finding_id": row.finding_id,
                 "payload": payload,
                 "investigation_id": row.investigation_id,
+                "run_id": (
+                    derived[row.investigation_id]
+                    if derived.get(row.investigation_id) in recorded
+                    else None
+                ),
                 "case_id": row.case_id,
                 "merged_into": row.merged_into,
                 "linked_case": linked.get(row.finding_id or ""),
@@ -687,6 +709,7 @@ def _present(
         "pickup_seconds": pickup,
         "workflow_id": workflow,
         "case_door": door,
+        "run_id": row.get("run_id"),
         "merge_note": row.get("merge_note"),
         "reason": row.get("reason"),
         "document": _document_line(kind, row["payload"]),

@@ -1,9 +1,9 @@
-"""Day-one cold start: a run, its alert snapshots and its filtered tickets."""
+"""A SIEM rule's link to the repo rule it came from (#3706)."""
 
 from core.upgrade.revision import run_sql
 
-revision = "0024_cold_start"
-down_revision = "0023_runtime_role_no_create"
+revision = "0028_detection_rule_origin"
+down_revision = "0027_detection_rule_checks"
 
 
 def upgrade() -> None:

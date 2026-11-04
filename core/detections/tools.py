@@ -1,24 +1,26 @@
 """
 Security-Detections tool integration - Pure Python implementation
-Provides access to 7,200+ detection rules across Sigma, Splunk, Elastic, and KQL formats
+Answers from the detection rules every configured repo holds (Sigma, Splunk, Elastic, KQL)
+and the rules Kibana's detection engine runs, as core/detections/inventory syncs them
+into Postgres. Splunk saved searches and Wazuh rules are not read yet.
 """
 
-import os
+import fnmatch
 import re
-from collections import defaultdict
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NoReturn, Optional
 
 import yaml
 
 from core.agents.projections import read_projection
-from core.config import _safe_home
 from core.detections.gaps import (
-    TACTICS,
+    FINDINGS_LIMIT,
     gap_report,
-    normalize_label,
+    missed_runs_report,
     read_alert_labels,
+    read_ledger,
 )
+from core.detections.inventory import catalog
+from core.detections.inventory.links import link_rule
 from core.detections.lint import lint_sigma
 from core.detections.reconstruction import (
     coverage_report,
@@ -28,212 +30,12 @@ from core.detections.reconstruction import (
 )
 from core.storage.database_data_service import DatabaseDataService
 
-# ``id = "T1219"`` under [[rule.threat.technique]] and its subtechnique tables.
-ELASTIC_TECHNIQUE_ID = re.compile(r'^id\s*=\s*"(T\d{4}(?:\.\d{3})?)"', re.MULTILINE)
-ELASTIC_TACTIC_NAME = re.compile(
-    r'^\[rule\.threat\.tactic\]\s*^id\s*=\s*"[^"]*"\s*^name\s*=\s*"([^"]+)"',
-    re.MULTILINE,
-)
-
 
 class SecurityDetectionsTools:
     """
     Main class for security detection tools integration.
-    Loads and indexes detection rules from multiple formats.
-
-    Paths are resolved dynamically from DetectionRulesService when available,
-    falling back to environment variables and then default paths.
+    Reads the detection_rules tables; the inventory sync keeps them current.
     """
-
-    def __init__(self):
-        """Initialize with detection rule paths from dynamic service or environment."""
-        # Try to get paths dynamically from DetectionRulesService
-        paths = self._get_dynamic_paths()
-
-        self.sigma_path = Path(
-            paths.get(
-                "sigma",
-                os.getenv(
-                    "SIGMA_PATHS", str(_safe_home() / "security-detections/sigma/rules")
-                ),
-            )
-        )
-        self.splunk_path = Path(
-            paths.get(
-                "splunk",
-                os.getenv(
-                    "SPLUNK_PATHS",
-                    str(
-                        _safe_home() / "security-detections/security_content/detections"
-                    ),
-                ),
-            )
-        )
-        self.elastic_path = Path(
-            paths.get(
-                "elastic",
-                os.getenv(
-                    "ELASTIC_PATHS",
-                    str(_safe_home() / "security-detections/detection-rules/rules"),
-                ),
-            )
-        )
-        self.kql_path = Path(
-            paths.get(
-                "kql",
-                os.getenv(
-                    "KQL_PATHS",
-                    str(
-                        _safe_home()
-                        / "security-detections/Hunting-Queries-Detection-Rules"
-                    ),
-                ),
-            )
-        )
-
-        self.detections = []
-        self.detections_by_technique = defaultdict(list)
-        self.detections_by_source = defaultdict(list)
-        self._loaded = False
-
-    def _get_dynamic_paths(self) -> Dict:
-        """Get paths from DetectionRulesService if available."""
-        try:
-            from core.detections.detection_rules_service import DetectionRulesService
-
-            env_vars = DetectionRulesService().get_mcp_env_vars()
-
-            paths = {}
-            if "SIGMA_PATHS" in env_vars:
-                # Take only the first path if multiple are comma-separated
-                paths["sigma"] = env_vars["SIGMA_PATHS"].split(",")[0]
-            if "SPLUNK_PATHS" in env_vars:
-                paths["splunk"] = env_vars["SPLUNK_PATHS"].split(",")[0]
-            if "ELASTIC_PATHS" in env_vars:
-                paths["elastic"] = env_vars["ELASTIC_PATHS"].split(",")[0]
-            if "KQL_PATHS" in env_vars:
-                paths["kql"] = env_vars["KQL_PATHS"].split(",")[0]
-
-            return paths
-        except Exception:
-            return {}
-
-    def reload(self):
-        """Reload detection rules (clears cache and re-reads from sources)."""
-        self._loaded = False
-        self.detections = []
-        self.detections_by_technique = defaultdict(list)
-        self.detections_by_source = defaultdict(list)
-
-        # Refresh paths from dynamic service
-        paths = self._get_dynamic_paths()
-        if paths.get("sigma"):
-            self.sigma_path = Path(paths["sigma"])
-        if paths.get("splunk"):
-            self.splunk_path = Path(paths["splunk"])
-        if paths.get("elastic"):
-            self.elastic_path = Path(paths["elastic"])
-        if paths.get("kql"):
-            self.kql_path = Path(paths["kql"])
-
-        self._load_detections()
-
-    def _load_detections(self):
-        """Load all detection files (lazy loading)"""
-        if self._loaded:
-            return
-
-        print("Loading detection rules...")
-
-        # Load Sigma rules
-        if self.sigma_path.exists():
-            for file_path in self.sigma_path.rglob("*.yml"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        detection = yaml.safe_load(f)
-                        if detection and isinstance(detection, dict):
-                            detection["_source"] = "sigma"
-                            detection["_file_path"] = str(file_path)
-                            self.detections.append(detection)
-                            self.detections_by_source["sigma"].append(detection)
-
-                            self._index_techniques(detection)
-                except Exception:
-                    pass  # Skip malformed files
-
-        # Load Splunk ESCU rules
-        if self.splunk_path.exists():
-            for file_path in self.splunk_path.rglob("*.yml"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        detection = yaml.safe_load(f)
-                        if detection and isinstance(detection, dict):
-                            detection["_source"] = "splunk"
-                            detection["_file_path"] = str(file_path)
-                            self.detections.append(detection)
-                            self.detections_by_source["splunk"].append(detection)
-
-                            self._index_techniques(detection)
-                except Exception:
-                    pass
-
-        # Load Elastic rules
-        if self.elastic_path.exists():
-            for file_path in self.elastic_path.rglob("*.toml"):
-                try:
-                    # Simple TOML parsing for threat section
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        detection = {
-                            "_source": "elastic",
-                            "_file_path": str(file_path),
-                            "_content": content,
-                        }
-                        self.detections.append(detection)
-                        self.detections_by_source["elastic"].append(detection)
-
-                        self._index_techniques(detection)
-                except Exception:
-                    pass
-
-        # Load KQL rules (.yaml and .md files)
-        if self.kql_path.exists():
-            # Load .yaml KQL rules (if any exist)
-            for file_path in self.kql_path.rglob("*.yaml"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        detection = yaml.safe_load(f)
-                        if detection and isinstance(detection, dict):
-                            detection["_source"] = "kql"
-                            detection["_file_path"] = str(file_path)
-                            self.detections.append(detection)
-                            self.detections_by_source["kql"].append(detection)
-
-                            self._index_techniques(detection)
-                except Exception:
-                    pass
-
-            # Load .md KQL rules (Hunting-Queries-Detection-Rules format)
-            for file_path in self.kql_path.rglob("*.md"):
-                # Skip README files and templates
-                if file_path.name.lower() in ("readme.md", "detectiontemplate.md"):
-                    continue
-                try:
-                    detection = self._parse_kql_markdown(file_path)
-                    if detection:
-                        self.detections.append(detection)
-                        self.detections_by_source["kql"].append(detection)
-
-                        self._index_techniques(detection)
-                except Exception:
-                    pass
-
-        self._loaded = True
-        print(f"Loaded {len(self.detections)} detection rules")
-        print(f"  Sigma: {len(self.detections_by_source['sigma'])}")
-        print(f"  Splunk: {len(self.detections_by_source['splunk'])}")
-        print(f"  Elastic: {len(self.detections_by_source['elastic'])}")
-        print(f"  KQL: {len(self.detections_by_source['kql'])}")
 
     async def analyze_coverage(
         self,
@@ -259,33 +61,10 @@ class SecurityDetectionsTools:
                 "error": "techniques is required unless run_id or steps is provided"
             }
 
-        self._load_detections()
-
-        coverage = {}
-        for technique in techniques:
-            technique_upper = technique.upper()
-            matching = self.detections_by_technique.get(technique_upper, [])
-
-            # Count by source
-            by_source = defaultdict(int)
-            for detection in matching:
-                by_source[detection["_source"]] += 1
-
-            coverage[technique] = {
-                "count": len(matching),
-                "by_source": dict(by_source),
-                "detections": [
-                    {
-                        "title": d.get("title") or d.get("name", "Untitled"),
-                        "source": d["_source"],
-                        "id": d.get("id", ""),
-                        "description": d.get("description", "")[:200],
-                    }
-                    for d in matching[:5]  # Top 5
-                ],
-            }
-
-        return coverage
+        return {
+            technique: catalog.rules_for_technique(technique.upper())
+            for technique in techniques
+        }
 
     async def _run_coverage(self, run_id: Optional[str], steps: Any) -> Dict:
         if isinstance(steps, list) and steps:
@@ -308,47 +87,45 @@ class SecurityDetectionsTools:
         return report
 
     async def search_detections(
-        self, query: str, source_type: Optional[str] = None, limit: int = 20
+        self,
+        query: str = "",
+        source_type: Optional[str] = None,
+        limit: int = 20,
+        tool: Optional[str] = None,
+        runs: Optional[str] = None,
     ) -> List[Dict]:
         """
         Search across all detection rules using keywords.
 
         Args:
             query: Search query (e.g., "powershell base64", "lateral movement")
-            source_type: Optional filter by source ("sigma", "splunk", "elastic", "kql")
+            source_type: Optional filter by rule format ("sigma", "splunk", "elastic", "kql")
             limit: Maximum number of results
+            tool: Optional filter by where the rule was read ("repo", "elastic")
+            runs: Optional filter by Runs result ("pass", "fail", "unknown")
 
         Returns:
-            List of matching detection rules
+            List of matching detection rules, each with its status and checks
         """
-        self._load_detections()
+        return catalog.search(query or "", source_type, limit, tool, runs)
 
-        query_lower = query.lower()
-        results = []
+    async def link_detection_rule(
+        self,
+        copy_rule_id: Any = None,
+        action: str = "",
+        reason: str = "",
+        origin_rule_id: Any = None,
+        **_kwargs: object,
+    ) -> Dict:
+        """Link, unlink or decline a SIEM copy and the repo rule it came from.
 
-        detections_to_search = self.detections
-        if source_type:
-            detections_to_search = self.detections_by_source.get(source_type, [])
-
-        for detection in detections_to_search:
-            # Search in title, description, tags
-            searchable = str(detection).lower()
-            if query_lower in searchable:
-                results.append(
-                    {
-                        "title": detection.get("title")
-                        or detection.get("name", "Untitled"),
-                        "source": detection["_source"],
-                        "id": detection.get("id", ""),
-                        "description": detection.get("description", "")[:300],
-                        "file_path": detection["_file_path"],
-                    }
-                )
-
-                if len(results) >= limit:
-                    break
-
-        return results
+        Args:
+            copy_rule_id: The SIEM rule's rule_id (a search_detections hit with tool != 'repo')
+            action: 'link', 'unlink' or 'decline'
+            reason: Why; required, and written to the audit log
+            origin_rule_id: The repo rule's rule_id; required to link or decline
+        """
+        return link_rule(copy_rule_id, action, reason, origin_rule_id)
 
     async def get_detection_count(self, source_type: Optional[str] = None) -> Dict:
         """
@@ -360,57 +137,45 @@ class SecurityDetectionsTools:
         Returns:
             Count information
         """
-        self._load_detections()
-
+        counts = catalog.rule_counts()
         if source_type:
-            return {
-                "source": source_type,
-                "count": len(self.detections_by_source.get(source_type, [])),
-            }
+            return {"source": source_type, "count": counts.get(source_type, 0)}
+        return {"total": sum(counts.values()), "by_source": counts}
 
-        return {
-            "total": len(self.detections),
-            "by_source": {
-                source: len(detections)
-                for source, detections in self.detections_by_source.items()
-            },
-        }
-
-    async def identify_gaps(self, context: str = "") -> Dict:
-        """Techniques seen on stored alerts that no loaded rule declares, with what it cannot say.
+    async def identify_gaps(
+        self, context: str = "", since_days: int = 30, **_kwargs: object
+    ) -> Dict:
+        """Techniques seen on stored alerts that no active rule declares, with what it cannot say,
+        and the proven hunts and closed Cases no rule alerted on (``runs_rules_missed``).
 
         Args:
             context: A case id, an ATT&CK label to match, or empty for every stored alert.
+            since_days: How far back Verdicts are read for runs_rules_missed.
         """
-        self._load_detections()
-        return gap_report(
+        # A model may send "30"; keep the window within what timedelta can hold.
+        since_days = min(max(int(since_days), 0), 3650)
+        alerts = read_alert_labels(context)
+        rules_by_technique = catalog.rules_by_technique()
+        report = gap_report(
             context,
-            read_alert_labels(context),
-            self.detections_by_technique,
-            self._rules_by_tactic(),
-            {source: len(rules) for source, rules in self.detections_by_source.items()},
+            alerts,
+            rules_by_technique,
+            catalog.rules_by_tactic(),
+            catalog.rule_counts(),
+            catalog.siem_runs_by_technique(),
         )
-
-    def _rules_by_tactic(self) -> Dict[str, int]:
-        counts: Dict[str, int] = defaultdict(int)
-        for detection in self.detections:
-            for tactic in self._declared_tactics(detection):
-                counts[tactic] += 1
-        return counts
-
-    def _declared_tactics(self, detection: Dict) -> set:
-        if detection["_source"] == "sigma":
-            tags = detection.get("tags") or []
-            names = [
-                tag[len("attack.") :]
-                for tag in tags
-                if isinstance(tag, str) and tag.startswith("attack.")
-            ]
-        elif detection["_source"] == "elastic":
-            names = ELASTIC_TACTIC_NAME.findall(detection["_content"])
-        else:
-            return set()
-        return {normalize_label(name) for name in names} & TACTICS
+        data = DatabaseDataService()
+        report["runs_rules_missed"] = missed_runs_report(
+            context,
+            alerts.scope.startswith("case "),
+            read_ledger(since_days),
+            lambda start, end: data.get_findings(
+                limit=FINDINGS_LIMIT, timestamp_start=start, timestamp_end=end
+            ),
+            rules_by_technique,
+            since_days,
+        )
+        return report
 
     async def get_coverage_stats(self, source_type: Optional[str] = None) -> Dict:
         """
@@ -422,119 +187,19 @@ class SecurityDetectionsTools:
         Returns:
             Coverage statistics
         """
-        self._load_detections()
-
-        stats = {
-            "total_detections": len(self.detections),
-            "techniques_covered": len(self.detections_by_technique),
-            "by_source": {
-                source: {
-                    "count": len(detections),
-                    "techniques": len(
-                        set(
-                            tech
-                            for det in detections
-                            for tech in self._extract_techniques(det)
-                        )
-                    ),
-                }
-                for source, detections in self.detections_by_source.items()
-            },
+        counts = catalog.rule_counts()
+        techniques = catalog.techniques_per_language()
+        by_source = {
+            source: {"count": count, "techniques": techniques.get(source, 0)}
+            for source, count in counts.items()
         }
-
-        if source_type and source_type in self.detections_by_source:
-            return {"source": source_type, **stats["by_source"][source_type]}
-
-        return stats
-
-    def _parse_kql_markdown(self, file_path: Path) -> Optional[Dict]:
-        """
-        Parse a KQL markdown file from the Hunting-Queries-Detection-Rules repo.
-
-        Expected format:
-            # Title
-            ## Query Information
-            #### MITRE ATT&CK Technique(s)
-            | Technique ID | Title | Link |
-            | --- | --- | --- |
-            | T1210 | Exploitation of Remote Services | ... |
-            #### Description
-            Description text...
-            ## Defender XDR / Sentinel
-            ```KQL
-            ...query...
-            ```
-        """
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if not content.strip():
-            return None
-
-        # Extract title from first markdown heading
-        title_match = re.search(r"^#\s+(.+)", content, re.MULTILINE)
-        title = title_match.group(1).strip() if title_match else file_path.stem
-
-        # Extract description from #### Description section
-        desc_match = re.search(
-            r"####\s+Description\s*\n(.*?)(?=\n####|\n##|\n```|\Z)", content, re.DOTALL
-        )
-        description = desc_match.group(1).strip() if desc_match else ""
-
-        # Extract MITRE technique IDs from the table or anywhere in the doc
-        mitre_techniques = list(set(re.findall(r"(T\d{4}(?:\.\d{3})?)", content)))
-
-        # Extract KQL queries from code blocks
-        kql_blocks = re.findall(r"```(?:KQL|kql)\s*\n(.*?)```", content, re.DOTALL)
-        query = (
-            "\n---\n".join(block.strip() for block in kql_blocks) if kql_blocks else ""
-        )
-
-        # Determine category from parent directory
-        category = (
-            file_path.parent.name if file_path.parent != self.kql_path else "General"
-        )
-
-        detection = {
-            "_source": "kql",
-            "_file_path": str(file_path),
-            "title": title,
-            "name": title,
-            "description": description,
-            "query": query,
-            "category": category,
-            "mitre": mitre_techniques,
-            "id": f"kql-{file_path.stem}",
+        if source_type and source_type in by_source:
+            return {"source": source_type, **by_source[source_type]}
+        return {
+            "total_detections": sum(counts.values()),
+            "techniques_covered": len(catalog.rules_by_technique()),
+            "by_source": by_source,
         }
-
-        return detection
-
-    def _extract_techniques(self, detection: Dict) -> List[str]:
-        """The distinct MITRE techniques a detection declares."""
-        source = detection["_source"]
-        if source == "sigma":
-            tags = detection.get("tags") or []
-            named = [
-                tag.replace("attack.", "")
-                for tag in tags
-                if isinstance(tag, str) and tag.startswith("attack.t")
-            ]
-        elif source == "splunk":
-            # ESCU moved this to the top level; older clones keep it under tags.
-            tags = detection.get("tags")
-            nested = tags.get("mitre_attack_id") if isinstance(tags, dict) else None
-            named = detection.get("mitre_attack_id") or nested or []
-        elif source == "elastic":
-            named = ELASTIC_TECHNIQUE_ID.findall(detection["_content"])
-        else:
-            named = detection.get("mitre") or []
-        if not isinstance(named, list):
-            return []
-        return list(dict.fromkeys(t.upper() for t in named if isinstance(t, str)))
-
-    def _index_techniques(self, detection: Dict) -> None:
-        for technique in self._extract_techniques(detection):
-            self.detections_by_technique[technique].append(detection)
 
     async def lint_detections(
         self,
@@ -556,17 +221,23 @@ class SecurityDetectionsTools:
         hostname: Optional[str] = None,
         started_at: Optional[str] = None,
         ended_at: Optional[str] = None,
+        ruled_out_events: Optional[List[Dict]] = None,
         **_kwargs: object,
     ) -> Dict:
         """Lint a candidate Sigma rule and replay it against events already in hand.
 
-        ``candidate`` is set only when lint passed and one event matched. The
-        missed step stays inside ``candidate`` so the return is not an attack step.
+        ``candidate`` is set only when lint passed, a proven event matched and no
+        ruled-out event matched. The missed step stays inside ``candidate`` so the
+        return is not an attack step.
         """
         lint = lint_sigma(rule_yaml=rule_yaml)
-        replay = _replay_sigma(rule_yaml or "", events)
+        replay = _replay_sigma(rule_yaml or "", events, ruled_out_events)
         candidate = None
-        if lint.get("passed") and replay.get("matched"):
+        if (
+            lint.get("passed")
+            and replay.get("matched")
+            and not replay.get("ruled_out_matched")
+        ):
             candidate = {
                 "technique_id": technique_id,
                 "hostname": hostname,
@@ -603,90 +274,406 @@ def get_security_detection_tools() -> SecurityDetectionsTools:
     return _security_detection_tools
 
 
-def _replay_sigma(rule_yaml: str, events: Any) -> Dict[str, Any]:
-    """One selection of scalar equality and ``|contains``, AND-ed across fields."""
+# Sigma's single-event detection: named selections joined by a boolean condition.
+# Anything outside it raises _Unevaluable, which the replay reports and never passes.
+
+Matcher = Callable[[Dict[str, Any]], bool]
+
+_MODIFIERS = {"contains", "startswith", "endswith", "all", "re"}
+_RE_FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+_RE_MAX_PATTERN = 256
+_RE_MAX_VALUE = 4096
+# Worst-case steps a |re check may risk: len(value) ** (unbounded + 1) * bounded choices.
+_RE_STEP_BUDGET = 10**9
+
+
+class _Unevaluable(Exception):
+    """A construct the replay cannot evaluate; the message names it."""
+
+
+def _replay_sigma(
+    rule_yaml: str, events: Any, ruled_out_events: Any = None
+) -> Dict[str, Any]:
+    if ruled_out_events is None:
+        ruled_out_events = []
     if not isinstance(events, list):
         return _replay(False, False, "events must be a list")
-    fields = _selection_fields(rule_yaml)
-    if fields is None:
-        return _replay(
-            False,
-            False,
-            "replay only evaluates one selection of equality and |contains",
-        )
-    matched = any(
-        isinstance(event, dict) and _event_matches(event, fields) for event in events
-    )
-    if matched:
-        return _replay(True, True, None)
-    return _replay(True, False, "no event matched the selection")
-
-
-def _replay(evaluated: bool, matched: bool, reason: Optional[str]) -> Dict[str, Any]:
-    return {"evaluated": evaluated, "matched": matched, "reason": reason}
-
-
-def _selection_fields(rule_yaml: str) -> Optional[List[tuple]]:
+    if not isinstance(ruled_out_events, list):
+        return _replay(False, False, "ruled_out_events must be a list")
     try:
-        parsed = yaml.safe_load(rule_yaml)
-    except yaml.YAMLError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    detection = parsed.get("detection")
-    if not isinstance(detection, dict):
-        return None
-    selections = {key: value for key, value in detection.items() if key != "condition"}
-    if len(selections) != 1:
-        return None
-    name, body = next(iter(selections.items()))
-    condition = detection.get("condition")
-    if not isinstance(condition, str) or condition.strip() != name:
-        return None
-    if not isinstance(body, dict) or not body:
-        return None
-    fields: List[tuple] = []
-    for key, value in body.items():
-        field = _field_clause(str(key), value)
-        if field is None:
-            return None
-        fields.append(field)
-    return fields
-
-
-def _field_clause(key: str, value: Any) -> Optional[tuple]:
-    parts = key.split("|")
-    if len(parts) == 1:
-        op = "eq"
-    elif len(parts) == 2 and parts[1] == "contains":
-        op = "contains"
+        rule = _compile_rule(rule_yaml)
+        matched = any(isinstance(e, dict) and rule(e) for e in events)
+        ruled_out = next(
+            (e for e in ruled_out_events if isinstance(e, dict) and rule(e)), None
+        )
+    except _Unevaluable as exc:
+        return _replay(False, False, str(exc))
+    except (RecursionError, ValueError) as exc:
+        # Deeply nested conditions, or numbers too long to print.
+        return _replay(False, False, f"rule could not be replayed: {exc}")
+    if ruled_out is not None:
+        reason = "a ruled-out event matched"
+    elif matched:
+        reason = None
     else:
-        return None
-    name = parts[0]
-    if not name:
-        return None
-    if op == "contains":
-        if not isinstance(value, str):
-            return None
-        return name, op, value
-    if isinstance(value, bool) or isinstance(value, (str, int, float)):
-        return name, op, value
-    return None
+        reason = "no event matched the detection"
+    return _replay(True, matched, reason, ruled_out)
 
 
-def _event_matches(event: Dict[str, Any], fields: List[tuple]) -> bool:
-    for name, op, expected in fields:
-        if name not in event:
+def _replay(
+    evaluated: bool,
+    matched: bool,
+    reason: Optional[str],
+    ruled_out_event: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "evaluated": evaluated,
+        "matched": matched,
+        "reason": reason,
+        "ruled_out_matched": ruled_out_event is not None,
+        "ruled_out_event": ruled_out_event,
+    }
+
+
+def _compile_rule(rule_yaml: str) -> Matcher:
+    try:
+        docs = [d for d in yaml.safe_load_all(rule_yaml) if d is not None]
+    except yaml.YAMLError as exc:
+        problem = getattr(exc, "problem", None) or "parse error"
+        raise _Unevaluable(f"rule is not valid YAML: {problem}") from None
+    if len(docs) != 1:
+        raise _Unevaluable(
+            "rule has %d YAML documents; correlation and meta rules are not replayed"
+            % len(docs)
+        )
+    rule = docs[0]
+    if not isinstance(rule, dict):
+        raise _Unevaluable("rule is not a YAML mapping")
+    if "correlation" in rule:
+        raise _Unevaluable("correlation rules are not replayed")
+    detection = rule.get("detection")
+    if not isinstance(detection, dict):
+        raise _Unevaluable("rule has no detection mapping")
+    if "timeframe" in detection:
+        raise _Unevaluable("timeframe needs an aggregation; it is not replayed")
+    condition = detection.get("condition")
+    if isinstance(condition, list) and condition:
+        condition = " or ".join(f"({c})" for c in condition)
+    if not isinstance(condition, str) or not condition.strip():
+        raise _Unevaluable("detection has no condition")
+    if "|" in condition:
+        raise _Unevaluable(f"aggregation in condition is not replayed: {condition!r}")
+    selections = {
+        str(name): _compile_selection(str(name), body)
+        for name, body in detection.items()
+        if name != "condition"
+    }
+    return _ConditionParser(condition, selections).parse()
+
+
+def _compile_selection(name: str, body: Any) -> Matcher:
+    if isinstance(body, dict):
+        if not body:
+            raise _Unevaluable(f"selection {name!r} is empty")
+        clauses = [_compile_field(str(k), v) for k, v in body.items()]
+        return lambda e: all(c(e) for c in clauses)
+    if isinstance(body, (str, int, float)) and not isinstance(body, bool):
+        body = [body]
+    if isinstance(body, list) and body:
+        if all(isinstance(b, dict) for b in body):
+            maps = [_compile_selection(name, b) for b in body]
+            return lambda e: any(m(e) for m in maps)
+        if all(
+            isinstance(b, (str, int, float)) and not isinstance(b, bool) for b in body
+        ):
+            # Keywords: any string value anywhere in the event contains one of them.
+            globs = [[_STAR, *_wild_tokens(str(b)), _STAR] for b in body]
+            return lambda e: any(_wild_match(g, v) for v in _strings(e) for g in globs)
+    raise _Unevaluable(f"selection {name!r} is not a map, list of maps or keywords")
+
+
+def _strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
+
+
+def _compile_field(key: str, value: Any) -> Matcher:
+    field, *mods = key.split("|")
+    if not field:
+        raise _Unevaluable(f"field {key!r} has no name")
+    unknown = [m for m in mods if m not in _MODIFIERS and m not in _RE_FLAGS]
+    if unknown or ("re" not in mods and any(m in _RE_FLAGS for m in mods)):
+        bad = unknown or [m for m in mods if m in _RE_FLAGS]
+        raise _Unevaluable(f"modifier {bad[0]!r} on {key!r} is not replayed")
+    values = value if isinstance(value, list) else [value]
+    if not values:
+        raise _Unevaluable(f"field {key!r} has an empty value list")
+    if value is None or (None in values and not mods):
+        # null: the key is absent or None.
+        rest = [_value_test(key, mods, v) for v in values if v is not None]
+        return lambda e: e.get(field) is None or any(t(e.get(field)) for t in rest)
+    tests = [_value_test(key, mods, v) for v in values]
+    combine = all if "all" in mods else any
+
+    def match(event: Dict[str, Any]) -> bool:
+        if field not in event:
             return False
-        actual = event[name]
-        if op == "eq":
-            # bool is an int, so True == 1. A scalar match is the value as written.
-            if (
-                isinstance(actual, bool) != isinstance(expected, bool)
-                or actual != expected
-            ):
-                return False
+        return combine(t(event[field]) for t in tests)
+
+    return match
+
+
+def _value_test(key: str, mods: List[str], expected: Any) -> Callable[[Any], bool]:
+    if expected is None or isinstance(expected, (dict, list)):
+        raise _Unevaluable(f"value {expected!r} on {key!r} is not replayed")
+    if "re" in mods:
+        if not isinstance(expected, str):
+            raise _Unevaluable(f"|re value on {key!r} is not a string")
+        if set(mods) & {"contains", "startswith", "endswith"}:
+            raise _Unevaluable(f"|re with another match modifier on {key!r}")
+        return _re_test(key, expected, mods)
+    if isinstance(expected, bool):
+        if mods != [] and mods != ["all"]:
+            raise _Unevaluable(f"boolean value on {key!r} takes no modifier")
+        # bool is an int, so True == 1. A bool matches only a bool.
+        return lambda a: isinstance(a, bool) and a == expected
+    tokens = _wild_tokens(str(expected))
+    if "contains" in mods or "endswith" in mods:
+        tokens.insert(0, _STAR)
+    if "contains" in mods or "startswith" in mods:
+        tokens.append(_STAR)
+    number = isinstance(expected, (int, float)) and not mods
+
+    def test(actual: Any) -> bool:
+        if isinstance(actual, bool):
+            return False
+        if number and isinstance(actual, (int, float)):
+            return actual == expected
+        if isinstance(actual, (int, float)):
+            actual = str(actual)
+        return isinstance(actual, str) and _wild_match(tokens, actual)
+
+    return test
+
+
+_STAR, _ANY = object(), object()
+
+
+def _wild_tokens(value: str) -> List[Any]:
+    """Sigma plain value: * and ? are wildcards; \\* \\? \\\\ are literal."""
+    tokens: List[Any] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value) and value[i + 1] in "*?\\":
+            tokens.extend(value[i + 1])
+            i += 2
             continue
-        if not isinstance(actual, str) or expected not in actual:
+        if ch == "*":
+            tokens.append(_STAR)
+        elif ch == "?":
+            tokens.append(_ANY)
+        else:
+            tokens.extend(ch.lower())
+        i += 1
+    return tokens
+
+
+def _wild_match(tokens: List[Any], value: str) -> bool:
+    """Case-insensitive full match; backtracks only to the last *, so O(len * tokens)."""
+    text = value.lower()
+    p = i = 0
+    star, mark = -1, 0
+    while i < len(text):
+        if p < len(tokens) and tokens[p] is _STAR:
+            star, mark, p = p, i, p + 1
+        elif p < len(tokens) and (tokens[p] is _ANY or tokens[p] == text[i]):
+            p, i = p + 1, i + 1
+        elif star >= 0:
+            mark += 1
+            p, i = star + 1, mark
+        else:
             return False
-    return True
+    while p < len(tokens) and tokens[p] is _STAR:
+        p += 1
+    return p == len(tokens)
+
+
+def _re_test(key: str, pattern: str, mods: List[str]) -> Callable[[Any], bool]:
+    if len(pattern) > _RE_MAX_PATTERN:
+        raise _Unevaluable(
+            f"|re pattern on {key!r} is longer than {_RE_MAX_PATTERN} characters"
+        )
+    unbounded, choices = _re_cost(key, pattern)
+    flags = 0
+    for m in mods:
+        flags |= _RE_FLAGS.get(m, 0)
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        raise _Unevaluable(f"|re pattern on {key!r} does not compile: {exc}") from None
+
+    def test(actual: Any) -> bool:
+        if isinstance(actual, bool):
+            return False
+        if isinstance(actual, (int, float)):
+            actual = str(actual)
+        if not isinstance(actual, str):
+            return False
+        n = len(actual)
+        if n > _RE_MAX_VALUE or n ** (unbounded + 1) * choices > _RE_STEP_BUDGET:
+            raise _Unevaluable(
+                f"|re on {key!r} against a {n}-character value "
+                "could backtrack too long; not replayed"
+            )
+        return compiled.search(actual) is not None
+
+    return test
+
+
+_QUANT = re.compile(r"\*|\+|\?|\{(\d*)(,?)(\d*)\}")
+
+
+def _re_cost(key: str, pattern: str) -> tuple:
+    """Bound a pattern's backtracking: (unbounded quantifiers, product of bounded ones).
+
+    Python's re has no timeout, so a repeated group holding a quantifier or an
+    alternation, and backreferences, are refused rather than risked.
+    """
+    unsafe = _Unevaluable(f"|re pattern on {key!r} could backtrack without bound")
+    unbounded, choices, i, in_class = 0, 1, 0, False
+    groups: List[bool] = []  # per open group: does its body repeat or branch
+    risky_group = after_quant = False
+    while i < len(pattern):
+        ch = pattern[i]
+        quant = None if in_class else _QUANT.match(pattern, i)
+        if ch == "\\":
+            if i + 1 < len(pattern) and pattern[i + 1].isdigit():
+                raise unsafe
+            i += 2
+        elif in_class:
+            in_class = ch != "]"
+            i += 1
+        elif quant and ch == "?" and after_quant:
+            i += 1  # lazy marker, not a quantifier
+        elif quant:
+            if quant.group(0) == "*" or quant.group(0) == "+":
+                unbounded += 1
+            elif ch == "?":
+                choices *= 2
+            elif quant.group(2) and not quant.group(3):
+                unbounded += 1
+            elif quant.group(2):
+                low = int(quant.group(1) or 0)
+                choices *= max(1, int(quant.group(3)) - low + 1)
+            if risky_group and ch != "?":
+                raise unsafe
+            if groups:
+                groups[-1] = True
+            i = quant.end()
+            risky_group, after_quant = False, True
+            continue
+        elif ch == "(":
+            groups.append(False)
+            i += 2 if pattern[i + 1 : i + 2] == "?" else 1
+        elif ch == ")":
+            risky_group = groups.pop() if groups else False
+            if groups and risky_group:
+                groups[-1] = True
+            i += 1
+            after_quant = False
+            continue
+        else:
+            if ch == "|" and groups:
+                groups[-1] = True
+            in_class = ch == "["
+            i += 1
+        risky_group = after_quant = False
+    if choices > _RE_STEP_BUDGET:
+        raise unsafe
+    return unbounded, choices
+
+
+class _ConditionParser:
+    """Recursive descent over: or < and < not < ( ) | N of pattern | name."""
+
+    _TOKEN = re.compile(r"\s*(\(|\)|[^\s()]+)")
+
+    def __init__(self, condition: str, selections: Dict[str, Matcher]):
+        self.condition = condition
+        self.selections = selections
+        self.tokens = [m.group(1) for m in self._TOKEN.finditer(condition)]
+        self.pos = 0
+
+    def parse(self) -> Matcher:
+        matcher = self._or()
+        if self.pos != len(self.tokens):
+            self._fail(f"unexpected {self.tokens[self.pos]!r}")
+        return matcher
+
+    def _fail(self, what: str) -> NoReturn:
+        raise _Unevaluable(f"condition {self.condition!r}: {what}")
+
+    def _peek(self) -> Optional[str]:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _next(self) -> str:
+        token = self._peek()
+        if token is None:
+            self._fail("ends early")
+        self.pos += 1
+        return token
+
+    def _or(self) -> Matcher:
+        parts = [self._and()]
+        while (self._peek() or "").lower() == "or":
+            self.pos += 1
+            parts.append(self._and())
+        return parts[0] if len(parts) == 1 else (lambda e: any(p(e) for p in parts))
+
+    def _and(self) -> Matcher:
+        parts = [self._not()]
+        while (self._peek() or "").lower() == "and":
+            self.pos += 1
+            parts.append(self._not())
+        return parts[0] if len(parts) == 1 else (lambda e: all(p(e) for p in parts))
+
+    def _not(self) -> Matcher:
+        if (self._peek() or "").lower() == "not":
+            self.pos += 1
+            inner = self._not()
+            return lambda e: not inner(e)
+        return self._atom()
+
+    def _atom(self) -> Matcher:
+        token = self._next()
+        if token == "(":
+            inner = self._or()
+            if self._next() != ")":
+                self._fail("unbalanced brackets")
+            return inner
+        if (self._peek() or "").lower() == "of":
+            self.pos += 1
+            return self._of(token.lower(), self._next())
+        if token in self.selections:
+            return self.selections[token]
+        self._fail(f"names unknown selection {token!r}")
+
+    def _of(self, quantity: str, target: str) -> Matcher:
+        if quantity not in ("1", "any", "all"):
+            self._fail(f"'{quantity} of' is not replayed")
+        if target == "them":
+            names = [n for n in self.selections if not n.startswith("_")]
+        else:
+            names = [n for n in self.selections if fnmatch.fnmatchcase(n, target)]
+        if not names:
+            self._fail(f"{target!r} names no selection")
+        parts = [self.selections[n] for n in names]
+        combine = all if quantity == "all" else any
+        return lambda e: combine(p(e) for p in parts)

@@ -3218,11 +3218,12 @@ export interface paths {
         put?: never;
         /**
          * Reload Service
-         * @description Reload the detection rules service (re-reads config and rescans all sources).
-         *     Also restarts the security-detections MCP server.
+         * @description Reload the detection rules service (re-reads config and rescans all sources),
+         *     syncs every source into the detection rule tables, and restarts the
+         *     security-detections MCP server.
          *
          *     Returns:
-         *         Success status with updated stats
+         *         Success status with updated stats and what the sync wrote per source
          */
         post: operations["post_api_detection-rules_reload"];
         delete?: never;
@@ -7560,6 +7561,11 @@ export interface components {
              * @default []
              */
             activities: unknown[];
+            /**
+             * Alerts Since Last Run
+             * @default 0
+             */
+            alerts_since_last_run: number;
             /** Assignee */
             assignee?: string | null;
             /** Case Id */

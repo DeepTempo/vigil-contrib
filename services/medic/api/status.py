@@ -20,10 +20,11 @@ from services.medic.api.history import (
 )
 from services.medic.app.gap import iso
 from services.medic.app.heartbeat import STARTUP_GRACE_S
+from services.medic.contracts.pack_check import _ts
 from services.medic.store import StoreError, open_reader
 from services.medic.store.writer import StoreUsage
 
-API_VERSION = "1.0"
+API_VERSION = "1.3"
 
 # The writer's usage().states are StoreHealth.states (medic-api.openapi.yaml).
 _NOT_RECORDING = {"recording_stopped", "migration_blocked"}
@@ -110,11 +111,28 @@ def build_status(
     usage: StoreUsage,
     decisions_lost: int,
     chain: dict[str, Any],
+    trace: dict[str, Any],
+    dev_mode: bool,
+    pack: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """`scheduler` is `Scheduler.status()`; `usage` is the writer's `usage()`."""
+    """`scheduler` is `Scheduler.status()`; `usage` is the writer's `usage()`;
+    `trace` is `TraceCapture.status()`; `pack` is the active pack's PackFacts,
+    emitted as a PackBrief (None: no verified pack, always so in dev mode)."""
     uptime_s = max(0, int(now - started_at))
     sensors = _sensors(scheduler)
     store = _store(usage, decisions_lost, chain)
+    brief = None
+    if pack is not None:
+        p = pack["pack"]  # the manifest's pack_identity
+        brief = {
+            "id": p["id"],
+            "version": p["version"],
+            "channel": p["channel"],
+            "expires_at": p["expires_at"],
+            # Derived each cycle, expired as the verifier sees it (pack_check P-EXPIRED).
+            "stale": _ts(p["expires_at"]).timestamp() <= now,
+            "in_vigil_range": pack["in_vigil_range"],
+        }
     return {
         "api_version": API_VERSION,
         "instance_id": instance_id,
@@ -132,12 +150,12 @@ def build_status(
         "uptime_s": uptime_s,
         "restarts_24h": history.restarts_since(now - DAY_S),
         "last_exit": history.last_exit,
-        # Unsigned dev rules until F6 loads signed packs (UX-9).
-        "dev_mode": True,
+        "dev_mode": dev_mode,
         "store": store,
         "sensors": sensors,
-        "pack": None,
+        "pack": brief,
         "chain_head": chain["head"],
+        "trace": {"id": trace["id"], "state": trace["state"]},
     }
 
 

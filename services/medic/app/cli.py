@@ -10,8 +10,9 @@ import signal
 import sqlite3
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from services.medic.api.history import record_exit, record_start
@@ -27,20 +28,24 @@ from services.medic.app.heartbeat import (
     read_heartbeat,
     write_heartbeat,
 )
+from services.medic.app.pack_admin import PackAdmin
 from services.medic.app.policy_probe import Policy, PolicyCheck, Verdict
 from services.medic.app.policy_probe import probe as policy_probe
+from services.medic.app.trace import TraceCapture, pack_of, start_capture
 from services.medic.app.watchdog import Watchdog
 from services.medic.app.wiring import (
     TICK_S,
+    Loaded,
     Medic,
     PolicySensor,
     PolicyStartupSensor,
     RecordingSensor,
-    load_dev_suppression,
+    grid_tick,
     load_engine_state,
-    rules_for_shape,
+    load_pack,
     save_engine_state,
 )
+from services.medic.engine.core import iso
 from services.medic.redact import install_log_redaction
 from services.medic.sensors import Sensor
 from services.medic.sensors.containers import docker_containers
@@ -164,7 +169,9 @@ def run(
         return 0
     try:
         shape = config.install_shape(env)
-        sensors = sensors_for(env, shape)
+        # Validates the addresses now; the sensors are built again once the
+        # pack's catalogue is known (it needs the data dir, opened later).
+        sensors_for(env, shape, ())
         probe_target = config.policy_probe_addr(env, shape)
         probe_control = config.policy_control_addr(env, shape)
         policy_check = (
@@ -200,7 +207,7 @@ def run(
         return _run(
             data_dir,
             shape=shape,
-            sensors=sensors,
+            sensors=functools.partial(sensors_for, env, shape),
             clock=clock,
             sleep=sleep,
             max_cycles=max_cycles,
@@ -211,12 +218,15 @@ def run(
             store_cap=store_cap,
             policy_check=policy_check,
             policy_refused_at=refused_at,
+            trace_id=config.trace_id(env),
         )
     finally:
         os.umask(old_umask)
 
 
-def sensors_for(env: Mapping[str, str], shape: str) -> list[Sensor]:
+def sensors_for(
+    env: Mapping[str, str], shape: str, catalog: Collection[tuple[str, str]]
+) -> list[Sensor]:
     """The sensors this shape runs; raises ConfigError on an unusable address.
 
     Helm reads each agent-worker pod and follows pod logs. Compose and
@@ -235,10 +245,10 @@ def sensors_for(env: Mapping[str, str], shape: str) -> list[Sensor]:
         proxy = config.dockerproxy_addr(env, shape)
         if proxy is not None:
             sensors.append(docker_containers(host=proxy[0], port=proxy[1]))
-            sensors.extend(compose_log_sensors(proxy[0], proxy[1]))
+            sensors.extend(compose_log_sensors(proxy[0], proxy[1], catalog=catalog))
     if shape == "helm":
         sensors.append(kube_pods())
-        sensors.extend(helm_log_sensors())
+        sensors.extend(helm_log_sensors(catalog=catalog))
     daemon = config.daemon_addr(env, shape)
     if daemon is not None:
         sensors.extend(daemon_sensors(host=daemon[0], port=daemon[1]))
@@ -331,7 +341,7 @@ def _run(
     data_dir: Path,
     *,
     shape: str,
-    sensors: Sequence[Sensor],
+    sensors: Callable[[Collection[tuple[str, str]]], list[Sensor]],
     clock: SystemClock,
     sleep: Callable[[float], Awaitable[None]],
     max_cycles: int | None,
@@ -342,6 +352,7 @@ def _run(
     store_cap: int = config.STORE_MAX_MB_DEFAULT * 2**20,
     policy_check: Callable[[], PolicyCheck] | None = None,
     policy_refused_at: float | None = None,
+    trace_id: str | None = None,
 ) -> int:
     started_at = clock.wall()
     try:
@@ -373,15 +384,35 @@ def _run(
         # Built first: a start that can't build writes no gap and no beat, so a
         # crash loop neither grows the store nor reads healthy (S4 review #1).
         try:
+            # The lifecycle needs the data dir, so the pack loads here, and its
+            # catalogue goes to the sensors (the log tails read it).
+            pack = load_pack(
+                shape,
+                dev_mode=vigil_dev_mode,
+                data_dir=data_dir,
+                now=datetime.fromtimestamp(started_at, UTC),
+            )
             medic = _build(
                 writer,
                 data_dir,
                 shape,
-                [*sensors, *policy_sensors, RecordingSensor(writer)],
+                pack,
+                [*sensors(pack.catalog), *policy_sensors, RecordingSensor(writer)],
                 clock,
                 vigil_dev_mode=vigil_dev_mode,
+                capture=start_capture(
+                    data_dir,
+                    trace_id,
+                    shape=shape,
+                    instance_id=writer.instance_id,
+                    tick=grid_tick(clock),
+                    pack=pack_of(pack.rules),
+                ),
             )
-        except Exception as exc:  # logged (redacted), exit 1
+        except config.ConfigError as exc:
+            log.error("Medic can't start: %s", exc)
+            return 1
+        except Exception as exc:  # logged (redacted), exit 1; a bad dev rule too
             log.exception("Medic can't start: %s", type(exc).__name__)
             return 1
         try:
@@ -389,6 +420,10 @@ def _run(
                 write_gap(writer, gap)
             except RecordHeld:  # stopped at start: written, in order, on resume
                 medic.held.append({"v": 1, "at": gap["to"], "type": "gap", "body": gap})
+            for event in pack.events:  # what the pack's start-up did, after the gap
+                medic._store(
+                    {"v": 1, "at": iso(started_at), "type": "pack_event", "body": event}
+                )
             write_heartbeat(
                 data_dir,
                 cycle=0,
@@ -401,6 +436,12 @@ def _run(
             log.error("cannot write to the data dir %s: %s", data_dir, exc)
             return 1
         log.info("Medic running; data dir %s, shape %s", data_dir, shape)
+        # Dev mode and a start with no usable trust root have no lifecycle.
+        admin = (
+            PackAdmin(pack, shape=shape, data_dir=data_dir, clock=clock)
+            if pack.context is not None
+            else None
+        )
         status = _Status(
             medic,
             data_dir,
@@ -408,6 +449,8 @@ def _run(
             clock,
             started_at,
             record_start(data_dir, now=started_at, previous_beat=previous_beat),
+            dev_mode=vigil_dev_mode,
+            admin=admin,
         )
         status.publish(cycle=0)
         watchdog = Watchdog(
@@ -429,6 +472,7 @@ def _run(
                     started_at,
                     max_cycles,
                     status.publish,
+                    admin,
                 )
             )
         # Logged here, through Medic's redaction, rather than as Python's own
@@ -440,6 +484,7 @@ def _run(
         finally:
             watchdog.stop()
             status.stop()
+            medic.capture.close(clock.wall())  # the manifest, on a clean stop
         record_exit(data_dir, now=clock.wall(), code=code)
     # So `check` doesn't call a stopped Medic healthy for the next 120 s.
     try:
@@ -458,9 +503,17 @@ def _run(
 
 
 def _build(
-    writer, data_dir: Path, shape: str, sensors, clock, *, vigil_dev_mode: bool = False
+    writer,
+    data_dir: Path,
+    shape: str,
+    pack: Loaded,
+    sensors,
+    clock,
+    *,
+    vigil_dev_mode: bool = False,
+    capture: TraceCapture | None = None,
 ) -> Medic:
-    rules, suppression = rules_for_shape(shape), load_dev_suppression()
+    rules, suppression = pack.rules, pack.suppression
     state = load_engine_state(data_dir)
     last_tick = (state or {}).get("last_tick")
     if isinstance(last_tick, int | float) and last_tick > clock.wall() + TICK_S:
@@ -477,6 +530,8 @@ def _build(
             engine_state=state,
             suppression=suppression,
             vigil_dev_mode=vigil_dev_mode,
+            capture=capture,
+            runbooks=pack.runbooks,
         )
     except Exception as exc:  # any bad state: start fresh, never a crash loop
         if state is None:
@@ -490,6 +545,8 @@ def _build(
             shape=shape,
             suppression=suppression,
             vigil_dev_mode=vigil_dev_mode,
+            capture=capture,
+            runbooks=pack.runbooks,
         )
 
 
@@ -502,6 +559,7 @@ async def _loop(
     started_at: float,
     max_cycles: int | None,
     after_cycle: Callable[..., None] = lambda **_: None,
+    admin: PackAdmin | None = None,
 ) -> int:
     """Run 15 s cycles until stopped; return the last completed cycle number."""
     stop = asyncio.Event()
@@ -530,7 +588,13 @@ async def _loop(
             # The loop is alive, so the watchdog keeps quiet; `check` goes stale and
             # the probe reports it.
             log.error("cannot write the heartbeat: %s", exc)
-        after_cycle(cycle=cycle)
+        if admin is not None:  # the cycle boundary: the one place the pack swaps
+            admin.apply_pending(medic)
+        try:
+            after_cycle(cycle=cycle)
+        finally:
+            if admin is not None:  # only now: the snapshot already shows the swap
+                admin.release()
         watchdog.beat()
         # To the next grid boundary, so a cycle's own run time never skips a tick.
         sleeper = asyncio.ensure_future(sleep(TICK_S - clock.wall() % TICK_S))
@@ -558,8 +622,11 @@ class _Status:
     built is skipped (the API answers `busy` once it's stale), and the listener
     retries on its own."""
 
-    def __init__(self, medic, data_dir, api, clock, started_at, history) -> None:
+    def __init__(
+        self, medic, data_dir, api, clock, started_at, history, *, dev_mode, admin
+    ) -> None:
         self.medic, self.data_dir, self.clock = medic, data_dir, clock
+        self.dev_mode, self.admin = dev_mode, admin
         self.started_at, self.history = started_at, history
         self.board = StatusBoard()
         self.api = None
@@ -571,12 +638,29 @@ class _Status:
                 wall=clock.wall,
                 monotonic=clock.monotonic,
                 data_dir=data_dir,
+                writer=medic.writer,
+                bridge=admin.bridge if admin else None,
                 bind_peer=api.bind_peer,
             )
-        self._failing = self._api_failed = False
+        self._failing = self._api_failed = self._pack_failing = False
+
+    def _pack_state(self, now: float) -> dict | None:
+        """The `PackState` for this snapshot; None (so `busy`) if it can't be built."""
+        if self.admin is None:
+            return None
+        try:
+            state = self.admin.state(datetime.fromtimestamp(now, UTC))
+            self._pack_failing = False
+            return state
+        except Exception as exc:  # noqa: BLE001 (never the loop's problem)
+            if not self._pack_failing:
+                log.error("Pack state not built: %s", type(exc).__name__)
+            self._pack_failing = True
+            return None
 
     def publish(self, *, cycle: int) -> None:
         now = self.clock.wall()
+        pack_state = self._pack_state(now)
         try:
             # The last beat actually written, not this cycle's attempt.
             beat = read_heartbeat(self.data_dir)
@@ -591,6 +675,9 @@ class _Status:
                 usage=self.medic.writer.usage(),
                 decisions_lost=self.medic.unstored,
                 chain=read_chain(self.data_dir),
+                trace=self.medic.capture.status(),
+                dev_mode=self.dev_mode,
+                pack=self.admin.facts if self.admin else None,
             )
             sensors = build_sensors(
                 self.medic.scheduler.sensor_states(),
@@ -604,7 +691,11 @@ class _Status:
         else:
             self._failing = False
             self.board.publish(
-                snapshot, started_at=self.started_at, taken_at=now, sensors=sensors
+                snapshot,
+                started_at=self.started_at,
+                taken_at=now,
+                sensors=sensors,
+                pack=pack_state,
             )
         if self.api is not None:
             try:

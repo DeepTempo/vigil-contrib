@@ -1001,6 +1001,8 @@ function CaseMenu({ onEdit, onMerge, onDelete }: { onEdit: () => void; onMerge: 
 
 export function CasePage({
   id,
+  openTab,
+  openRun,
   c,
   created,
   combinedState,
@@ -1025,6 +1027,9 @@ export function CasePage({
   onRefresh,
 }: {
   id: string
+  /** The tab and run to land on; an unknown tab lands on Summary, a run not on the case on All runs. */
+  openTab?: string | null
+  openRun?: string | null
   c: CaseRow | null
   created: string
   combinedState: string
@@ -1056,7 +1061,8 @@ export function CasePage({
   /** Re-read the case in place, without blanking it. Used while the run is live. */
   onRefresh?: () => void
 }) {
-  const [tab, setTab] = useState<Tab>('Summary')
+  const landingTab: Tab = TABS.find((name) => name === openTab) ?? 'Summary'
+  const [tab, setTab] = useState<Tab>(landingTab)
   const [sla, setSla] = useState<{ due: string; health: string } | null>(null)
   const [workflowNames, setWorkflowNames] = useState<Record<string, string>>({})
   const [rows, setRows] = useState<CaseRecordRow[]>([])
@@ -1067,7 +1073,7 @@ export function CasePage({
   const recordReady = useRef(false)
   recordReady.current = recordPhase === 'ready'
   const [chip, setChip] = useState<RecordChip | 'all'>('all')
-  const [runFilter, setRunFilter] = useState<string | null>(null)
+  const [runFilter, setRunFilter] = useState<string | null>(openRun ?? null)
   const [askSeed, setAskSeed] = useState<{ id: string; seed: ChatSeed } | null>(null)
   const [focusEvidence, setFocusEvidence] = useState<string | null>(null)
   const [note, setNote] = useState('') // Reopen's failure, on Summary
@@ -1156,15 +1162,15 @@ export function CasePage({
   }, [id])
 
   useEffect(() => {
-    setTab('Summary')
+    setTab(landingTab)
     setAssessed(null)
     setAskSeed(null)
     setFocusEvidence(null)
     setNote('')
     setChip('all')
-    setRunFilter(null)
+    setRunFilter(openRun ?? null)
     setEvidenceLimits({})
-  }, [id])
+  }, [id, landingTab, openRun])
 
   // leaving the Record tab (or the case) drops its status and ignores a call still in flight
   useEffect(() => {
@@ -1259,8 +1265,9 @@ export function CasePage({
   const filter = runs.some((one) => one.ref.run_id === runFilter) ? runFilter : null
   const shownRuns = filter ? runs.filter((one) => one.ref.run_id === filter) : runs
   useEffect(() => {
-    if (runFilter && !filter) setRunFilter(null)
-  }, [runFilter, filter])
+    // no runs yet means the case is still loading, not that the run left it
+    if (runFilter && !filter && runs.length > 0) setRunFilter(null)
+  }, [runFilter, filter, runs.length])
 
   // A case refresh that moves another run on the case (a hunt's root-cause follow-up) re-reads the record in place.
   const otherRuns = investigations.filter((item) => !item.primary).map((item) => `${item.run_id}:${item.status}`).join(' ')
@@ -1662,7 +1669,21 @@ export function CasePage({
             </div>
             <div className="dh-meta">
               {latest && <span>{workflowNames[latest.workflow_id] || latest.workflow_name || latest.workflow_id}</span>}
-              {c.findings > 0 && <span>Combined from {c.findings} {c.findings === 1 ? 'alert' : 'alerts'}</span>}
+              {c.findings > 0 && (
+                <span>
+                  Combined from {c.findings} {c.findings === 1 ? 'alert' : 'alerts'}
+                  {c.alertsSinceLastRun > 0 && (
+                    <>
+                      , {c.alertsSinceLastRun} since last run{' '}
+                      <InfoTip
+                        label="How alerts since last run are counted"
+                        source="Intake rows merged into this case, and the case's newest run."
+                        calculation="The alerts merged after that run started. It did not read them. Alerts marked as noise are left out."
+                      />
+                    </>
+                  )}
+                </span>
+              )}
               <span>Opened {created}</span>
               <span>
                 <Icon name="clock" size={13} /> Resolve by {sla ? when(sla.due) : '—'}
