@@ -19,7 +19,8 @@ from typing import Any, Dict, List, Optional, Set
 from sqlalchemy import func
 
 from core.agents.enablement import disabled_agent_ids
-from core.findings.overview import RATED_STATUS, completion_level
+from core.findings.overview import completion_level
+from core.workflows.run_rating import RATED_STATUS
 from core.llm import target
 from core.llm.providers.registry import get_registry, model_display_name
 from core.storage.connection import get_db_manager
@@ -97,6 +98,7 @@ def _week_run_stats(now: datetime) -> Dict[str, Dict[str, Any]]:
         ended = completed + sum(statuses.get(s, 0) for s in ("failed", "cancelled"))
         stats[workflow_id] = {
             "runs_7d": sum(statuses.values()),
+            "rejected_7d": statuses.get("rejected", 0),
             "success_rate": completed / ended if ended else None,
             "success_level": completion_level(ended, completed),
             "mean_cost_usd": mean.get(workflow_id),
@@ -106,6 +108,7 @@ def _week_run_stats(now: datetime) -> Dict[str, Dict[str, Any]]:
 
 _NO_RUNS: Dict[str, Any] = {
     "runs_7d": 0,
+    "rejected_7d": 0,
     "success_rate": None,
     "success_level": None,
     "mean_cost_usd": None,
