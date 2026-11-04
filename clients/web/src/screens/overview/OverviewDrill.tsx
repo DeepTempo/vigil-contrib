@@ -103,10 +103,12 @@ const EMPTY: Record<string, string> = {
   scoring: 'Nothing is waiting to be scored. New alerts are usually scored within a minute of arriving, so this is often empty.',
   waiting: 'Every alert is in a case, queued or dropped.',
 }
-// A closed case stays closed, so a zero on Today says nothing about yesterday.
+// These stay done, so a zero on Today says nothing about yesterday.
 const EMPTY_TODAY: Record<string, string> = {
   resolved_auto: 'No case has been closed by an agent today.',
   resolved_person: 'No analyst has closed a case today.',
+  dismissed: 'Nothing has been dropped as noise today.',
+  excluded: 'No alert has named an excluded IP today.',
 }
 
 const humanize = (name: string) =>
