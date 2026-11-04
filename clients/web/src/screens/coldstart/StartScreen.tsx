@@ -10,6 +10,8 @@ import {
   type ColdStartUploadResult,
   type ColdStartVerdict,
 } from '../../services/api'
+import { useAuth } from '../../contexts/AuthContext'
+import { GO_LIVE_SOURCE_PERM } from '../../shell/landing'
 import { extractApiError } from '../../shared/formKit'
 import type { ConsoleScreenProps } from '../../shared/types'
 import './coldstart.css'
@@ -762,13 +764,17 @@ function Effects({ items }: { items: ReactNode[] }) {
 
 function GoLive({ run, sources, goSettings, onBack, onRun }: Pick<Nav, 'goSettings'> & { run: ColdStartRun; sources: ColdStartSources; onBack: () => void; onRun: (run: ColdStartRun) => void }) {
   const request = useRequest()
+  const { hasPermission } = useAuth()
+  const source = sourceFor(sources, run.source)
+  const needsAnother = source.kind === 'federation' && !hasPermission(GO_LIVE_SOURCE_PERM)
   return (
     <div className="cs-card" style={{ display: 'grid', gap: 12, maxWidth: 720 }}>
       <h2>What happens when you go live</h2>
       <Effects items={liveEffects(run, sources, goSettings)} />
+      {needsAnother && <div className="cs-card cs-note" role="status">Going live turns on {source.label}, which takes the integrations.write permission. A senior analyst, a manager or an admin can do it, and your reviews stay on this run.</div>}
       {request.error && <div className="cs-card cs-error" role="alert">{request.error}</div>}
       <div className="cs-row">
-        <button type="button" className="btn primary" disabled={request.busy || run.source === 'sample'} onClick={() => request.send(async () => onRun((await coldStartApi.goLive(run.id)).data), 'Could not go live.')}>
+        <button type="button" className="btn primary" disabled={request.busy || run.source === 'sample' || needsAnother} onClick={() => request.send(async () => onRun((await coldStartApi.goLive(run.id)).data), 'Could not go live.')}>
           {request.busy ? 'Going live' : 'Go live'}
         </button>
         <button type="button" className="btn ghost" onClick={onBack}>Back to review</button>

@@ -2,16 +2,16 @@ import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { coldStartApi } from '../services/api'
-import { landingScreen, START_PERM } from '../shell/landing'
+import { landingScreen, landsOnStart } from '../shell/landing'
 import Loader from './Loader'
 
 const LATEST_RUN_WAIT_MS = 3000
 
 // `/` has no screen of its own; send each person to where their role starts.
-// Someone who can build a baseline starts there until one is live.
+// Someone who can finish day one setup starts there until a baseline is live.
 const LandingRedirect = () => {
   const { hasPermission } = useAuth()
-  const mayStart = hasPermission(START_PERM)
+  const mayStart = landsOnStart(hasPermission)
   const [needsStart, setNeedsStart] = useState<boolean | null>(mayStart ? null : false)
 
   useEffect(() => {
