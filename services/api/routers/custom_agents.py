@@ -138,6 +138,26 @@ def list_custom_agents() -> Dict[str, Any]:
     return {"agents": agents}
 
 
+# Tool groups for the picker: Vigil's own tools by what they work on, the rest by the
+# integration that serves them.
+_BUILTIN_GROUPS = (
+    ("Findings", ("finding", "dismiss_finding")),
+    ("Cases", ("case", "resolution")),
+    ("Detections", ("detection", "coverage", "technique", "gaps")),
+    ("Approvals", ("approv", "reject_action")),
+    ("Memory", ("recall", "episode", "hunt", "reconstruct", "replay")),
+    ("Threat intel", ("indicator", "intel")),
+    ("Skills", ("skill",)),
+)
+
+
+def _builtin_group(name: str) -> str:
+    for label, words in _BUILTIN_GROUPS:
+        if any(w in name for w in words):
+            return label
+    return "Vigil"
+
+
 def _first_sentence(text: Optional[str]) -> str:
     text = " ".join((text or "").split())
     end = text.find(". ")
@@ -151,10 +171,10 @@ def list_available_tools(
     """Every tool an agent may be given, for the agent drawer's tool picker.
 
     ``catalog`` has one row per tool: its name, the server that serves it
-    ("vigil" for Vigil's own) and the first sentence of its description.
-    ``changes`` marks each of them read_only or asks_first from its stored
-    effect class; a name missing there is not connected. ``tools`` lists the
-    connected MCP tool names.
+    ("vigil" for Vigil's own), the group the picker files it under, the first
+    sentence of its description and its mark. ``changes`` marks each of them
+    read_only or asks_first from its stored effect class; a name missing there
+    is not connected. ``tools`` lists the connected MCP tool names.
 
     Sources, in order of preference:
       1. Live MCP registry (populated when MCP servers connect at startup).
@@ -223,14 +243,24 @@ def list_available_tools(
     # What each tool does to the outside world, from its stored effect class.
     # A name missing here is not connected.
     asking = asks_first(rows)
+    changes = {n: "asks_first" if n in asking else "read_only" for n in sorted(rows)}
     return {
         "tools": tools,
-        "changes": {
-            n: "asks_first" if n in asking else "read_only" for n in sorted(rows)
-        },
+        "changes": changes,
         "catalog": sorted(
-            rows.values(),
-            key=lambda r: (r["server"] != VIGIL_SERVER, r["server"], r["name"]),
+            (
+                {
+                    **row,
+                    "group": (
+                        _builtin_group(row["name"])
+                        if row["server"] == VIGIL_SERVER
+                        else row["server"]
+                    ),
+                    "changes": changes[row["name"]],
+                }
+                for row in rows.values()
+            ),
+            key=lambda r: (r["server"] != VIGIL_SERVER, r["group"], r["name"]),
         ),
     }
 

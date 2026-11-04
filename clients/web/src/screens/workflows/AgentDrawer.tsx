@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Icon } from '../../shared/icons'
 import { ConfirmDialog } from '../../shared/ui'
+import { useWarnOnUnload } from '../../shared/unsaved'
+import ToolPicker from './ToolPicker'
+import { useToolCatalog } from './toolCatalog'
 import { agentsApi, aiConfigApi, type AIModelInfo, type GeneratedAgentDraft } from '../../services/api'
 import type { ToolChange } from '../../data/appData'
 import { errMsg } from './runRead'
@@ -61,92 +64,6 @@ function withSaved<T extends string | number>(listed: T[], saved: T | ''): T[] {
   return saved !== '' && !listed.includes(saved as T) ? [...listed, saved as T] : listed
 }
 
-/** One row of GET /agents/custom/_meta/tools' `catalog`: "vigil" serves Vigil's own tools. */
-interface CatalogTool {
-  name: string
-  server: string
-  description: string
-}
-
-function ToolMark({ change }: { change: ToolChange | null | undefined }) {
-  if (change === null) return null
-  if (!change) return <span className="vg-side-mark none">Not connected</span>
-  if (change === 'asks_first') return <span className="vg-side-mark asks_first">Asks you</span>
-  return (
-    <span className={`vg-side-mark ${change}`}>
-      On its own{change === 'on_its_own' && <span className="poor"> changes things</span>}
-    </span>
-  )
-}
-
-/** Find a tool among every integration's by name, server or description, under the server that serves it.
- *  Servers start folded; a search unfolds every server with a match, and Enter adds the first. */
-function ToolFinder({ catalog, markOf, onAdd }: {
-  catalog: CatalogTool[] | null
-  markOf: (tool: string) => ToolChange | null | undefined
-  onAdd: (tool: string) => void
-}) {
-  const [query, setQuery] = useState('')
-  const [unfolded, setUnfolded] = useState<Set<string>>(new Set())
-  const needle = query.trim().toLowerCase()
-  const groups = useMemo(() => {
-    const words = needle.split(/\s+/).filter(Boolean)
-    const out = new Map<string, CatalogTool[]>()
-    for (const t of catalog ?? []) {
-      const text = `${t.name} ${t.server} ${t.description}`.toLowerCase()
-      if (words.every((w) => text.includes(w))) out.set(t.server, [...(out.get(t.server) ?? []), t])
-    }
-    return [...out]
-  }, [catalog, needle])
-  const first = groups[0]?.[1][0]
-  const fold = (server: string) => setUnfolded((s) => {
-    const next = new Set(s)
-    if (!next.delete(server)) next.add(server)
-    return next
-  })
-
-  return (
-    <div className="vg-side-finder">
-      <input
-        className="vg-side-input"
-        aria-label="Find a tool"
-        value={query}
-        autoComplete="off"
-        disabled={!catalog?.length}
-        placeholder={catalog === null ? 'Add tool…' : catalog.length ? `Find a tool among ${catalog.length} by name or what it does` : 'No more connected tools'}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && needle && first) { onAdd(first.name); setQuery('') } }}
-      />
-      {!!catalog?.length && (
-        <div className="vg-side-finder-list" role="list" aria-label="Tools to add">
-          {groups.length === 0 && <span className="vg-side-hint">No tool matches “{query.trim()}”.</span>}
-          {groups.map(([server, tools]) => {
-            const open = needle !== '' || unfolded.has(server)
-            return (
-              <div key={server} role="listitem">
-                <button type="button" className="vg-side-finder-group" aria-expanded={open} onClick={() => fold(server)}>
-                  <span style={{ transform: open ? 'rotate(90deg)' : 'none', display: 'inline-flex' }}><Icon name="chevR" size={12} /></span>
-                  {server === 'vigil' ? 'Vigil' : server}
-                  <span className="vg-side-finder-n">{tools.length}</span>
-                </button>
-                {open && tools.map((t) => (
-                  <button key={t.name} type="button" className="vg-side-finder-tool" title={t.description || t.name} aria-label={`Add ${t.name}`} onClick={() => onAdd(t.name)}>
-                    <span className="vg-side-finder-main">
-                      <span className="vg-side-tool-name">{t.name}</span>
-                      {t.description && <span className="vg-side-finder-desc">{t.description}</span>}
-                    </span>
-                    <ToolMark change={markOf(t.name)} />
-                  </button>
-                ))}
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
 /** The drawer over the Agents tab. `agentId` null builds a new agent; `describe` opens it with the describe box.
  *  `builtIn` shows a built-in's values: nothing exists until Save, which makes one copy. */
 export function AgentDrawer({
@@ -161,7 +78,7 @@ export function AgentDrawer({
   agentId: string | null
   builtIn?: boolean
   describe?: boolean
-  /** marks from the agent's list row, shown until the connected-tools list arrives */
+  /** marks from the agent's list row, shown until the tool catalog arrives */
   toolChanges?: Record<string, ToolChange>
   /** size of the skill library; null while it is not known */
   skillCount?: number | null
@@ -180,9 +97,7 @@ export function AgentDrawer({
   const [confirmClose, setConfirmClose] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [models, setModels] = useState<AIModelInfo[]>([])
-  // null until /_meta/tools answers, or when it fails
-  const [connected, setConnected] = useState<Record<string, ToolChange> | null>(null)
-  const [catalog, setCatalog] = useState<CatalogTool[] | null>(null)
+  const catalog = useToolCatalog()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -196,6 +111,7 @@ export function AgentDrawer({
 
   // Advanced decides whether Save keeps the whole-prompt override; text typed for an AI draft counts too
   const dirty = aiText.trim() !== '' || advanced !== opened.advanced || JSON.stringify(form) !== JSON.stringify(opened.form)
+  useWarnOnUnload(dirty)
   const close = useCallback(() => (dirty ? setConfirmClose(true) : onClose()), [dirty, onClose])
 
   useEffect(() => {
@@ -208,11 +124,6 @@ export function AgentDrawer({
 
   useEffect(() => {
     let cancelled = false
-    agentsApi.getAvailableTools().then((r) => {
-      if (cancelled) return
-      setConnected((r.data?.changes || {}) as Record<string, ToolChange>)
-      setCatalog((r.data?.catalog || []) as CatalogTool[])
-    }).catch(() => {})
     aiConfigApi.listModels().then((r) => !cancelled && setModels(r.data?.models || [])).catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -252,14 +163,6 @@ export function AgentDrawer({
       .catch((e) => { if (!cancelled) { setLoadErr(errMsg(e)); setPhase('error') } })
     return () => { cancelled = true }
   }, [agentId, builtIn])
-
-  // A tool is connected when the list knows it. Before the list arrives, or if it fails, the row's marks
-  // stand in, and a tool with none is unknown (null) rather than not connected.
-  const markOf = (tool: string): ToolChange | null | undefined => (connected ? connected[tool] : toolChanges[tool] ?? null)
-  const addable = useMemo(
-    () => catalog && catalog.filter((t) => !form.tools.includes(t.name)),
-    [catalog, form.tools],
-  )
 
   const modelOptions = withSaved(models.map((m) => m.model_id), form.model)
   const fallbackOptions = withSaved(models.map((m) => m.model_id), form.fallback_model)
@@ -353,6 +256,7 @@ export function AgentDrawer({
           className="vg-side-panel"
           role="dialog"
           aria-label={isCreate ? 'New agent' : 'Edit agent'}
+          data-unsaved={dirty ? '' : undefined}
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-start gap-3">
@@ -537,22 +441,14 @@ export function AgentDrawer({
                 </span>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <span className="vg-side-title">Tools it may use</span>
-                {form.tools.length === 0 && <span className="vg-side-hint">No tools yet.</span>}
-                {form.tools.map((tool) => (
-                  <div key={tool} className="vg-side-tool">
-                    <span className="vg-side-tool-name">{tool}</span>
-                    <ToolMark change={markOf(tool)} />
-                    <button type="button" className="vg-side-x" aria-label={`Remove ${tool}`} onClick={() => set('tools', form.tools.filter((t) => t !== tool))}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-                <ToolFinder catalog={addable} markOf={markOf} onAdd={(tool) => set('tools', [...form.tools, tool])} />
-              </div>
+              <ToolPicker
+                label="Tools it may use"
+                hint="Search by name or by what a tool does, filter by integration, or add a whole group. A tool marked Asks you waits for a person before it acts."
+                value={form.tools}
+                onChange={(t) => set('tools', t)}
+                catalog={catalog}
+                marks={toolChanges}
+              />
 
               {error && <div className="vg-side-err">{error}</div>}
               <div className="vg-side-foot">
