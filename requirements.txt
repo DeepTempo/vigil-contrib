@@ -36,6 +36,22 @@ email-validator>=2.3.0
 # bundled OCR, no network call). Office types also need LibreOffice installed.
 liteparse>=2.15.1
 
+# Sigma to SIEM conversion, and replay of rules Vigil's own evaluator refuses.
+# LGPL or MIT, used as unmodified dependencies. The Panther and Loki backends stay
+# optional: see core/detections/engineering/requirements-sigma.txt.
+# pyparsing stays below 3.2: 3.3 breaks every rule that uses "not".
+pySigma==0.11.23
+pyparsing==3.1.4
+pySigma-backend-splunk==1.1.3
+pySigma-backend-kusto==0.4.5
+pySigma-backend-elasticsearch==1.1.6
+pySigma-backend-opensearch==1.0.4
+pySigma-backend-secops==0.1.4
+pySigma-backend-qradar-aql==0.3.2
+pySigma-backend-crowdstrike==2.0.1
+pySigma-backend-sentinelone-pq==0.1.5
+pySigma-backend-datadog==0.3.1
+
 # Database
 sqlalchemy>=2.1.0
 psycopg2-binary>=2.9.12

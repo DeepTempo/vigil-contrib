@@ -1,4 +1,4 @@
-"""Real pySigma conversion, for an install that added requirements-sigma.txt."""
+"""Real pySigma conversion, on what requirements.lock installs."""
 
 import json
 import tomllib
@@ -10,9 +10,6 @@ from core.detections.engineering import package, sigma_text, targets
 from core.detections.overlay import _parse
 
 from .conftest import RULE
-
-pytest.importorskip("sigma.collection")
-pytest.importorskip("sigma.backends.splunk")
 
 TEXT, _ = sigma_text.fill_in(RULE, None)
 DOC = sigma_text.parse(TEXT)
@@ -33,14 +30,28 @@ def test_splunk_lands_disabled_with_the_bare_query_kept_for_the_overlay():
 
 
 def test_each_format_is_what_its_siem_reads_and_lands_disabled():
-    rows = _rows("sentinel", "elastic", "opensearch", "panther", "chronicle")
+    rows = _rows("sentinel", "elastic", "opensearch", "chronicle")
     sentinel = yaml.safe_load(rows["sentinel"]["output"])
     assert sentinel["kind"] == "Scheduled" and sentinel["status"] == "Disabled"
     assert sentinel["query"].startswith("imProcessCreate")
     assert json.loads(rows["elastic"]["output"])["enabled"] is False
     assert json.loads(rows["opensearch"]["output"])["enabled"] is False
-    assert yaml.safe_load(rows["panther"]["output"])["Enabled"] is False
     assert rows["chronicle"]["output"].lstrip().startswith("rule office_application")
+
+
+def test_every_target_in_the_lock_converts_and_the_optional_two_say_how_to_add_them():
+    rows = _rows()
+    assert {name for name, row in rows.items() if row["status"] == "not_installed"} == {
+        "panther",
+        "loki",
+    }
+    assert "requirements-sigma.txt" in rows["loki"]["error"]
+    assert not rows["loki"]["output"]
+    assert {
+        name
+        for name, row in rows.items()
+        if row["status"] == "converted" and row["output"]
+    } == set(targets.TARGETS) - {"panther", "loki"}
 
 
 def test_a_field_a_backend_cannot_map_is_needs_field_mapping_not_a_silent_skip():

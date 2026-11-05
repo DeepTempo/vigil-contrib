@@ -1,8 +1,9 @@
 """Sigma to SIEM conversion over whichever pySigma backends are installed, per target.
 
-Ported from the detection write-back tool. pySigma is optional and not in requirements.lock
-(see requirements-sigma.txt), so every target can answer "not installed". A failure on one
-target never hides the others. Conversion only produces text: nothing here reaches a SIEM.
+Ported from the detection write-back tool. pySigma and most backends are in requirements.lock.
+Panther and Loki are not (see requirements-sigma.txt), so those targets answer "not installed"
+until someone adds them. A failure on one target never hides the others. Conversion only
+produces text: nothing here reaches a SIEM.
 
 ``measured_valid_pct`` is the tool's eval, 3,763 public SigmaHQ rules on 2026-10-21 with
 pySigma 0.11.23: the share whose packaged file was well-formed. No SIEM was available, so valid
@@ -20,8 +21,12 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from core.detections.engineering import package
 
 PYSIGMA_MISSING = (
-    "pySigma is not installed. It is optional and not in requirements.lock; install "
-    "core/detections/engineering/requirements-sigma.txt, or paste a query here."
+    "pySigma is not installed. It is in requirements.lock, so this install is out of date: "
+    "install from that file, or paste a query here."
+)
+BACKEND_MISSING = (
+    "The pySigma backend {backend!r} is not installed. It is optional and not in "
+    "requirements.lock: see core/detections/engineering/requirements-sigma.txt."
 )
 
 TargetStatus = Literal[
@@ -239,7 +244,7 @@ def _convert_one(text: str, doc: Dict[str, Any], target: Target) -> Dict[str, An
         return _row(
             target,
             "not_installed",
-            error=f"The pySigma backend {target.backend!r} is not installed.",
+            error=BACKEND_MISSING.format(backend=target.backend),
         )
     resolver = ProcessingPipelineResolver(_plugins().pipelines)
     needs_pipeline = bool(getattr(backend_cls, "requires_pipeline", False))

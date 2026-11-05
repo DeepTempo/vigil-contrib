@@ -3,7 +3,8 @@
 import pytest
 
 from core.detections.engineering import lint, sigma_text
-from core.detections.engineering.targets import convert, pysigma_installed, sigma_error
+from core.detections.engineering import targets
+from core.detections.engineering.targets import convert, sigma_error
 from core.detections.tools import _replay_sigma
 
 from .conftest import RULE
@@ -93,8 +94,10 @@ def test_an_exclusion_needs_a_rule_it_can_change():
         )
 
 
-@pytest.mark.skipif(pysigma_installed(), reason="this install has pySigma")
-def test_without_pysigma_every_target_fails_honestly_and_no_output_is_invented():
+def test_without_pysigma_every_target_fails_honestly_and_no_output_is_invented(
+    monkeypatch,
+):
+    monkeypatch.setattr(targets, "pysigma_installed", lambda: False)
     rows = convert(RULE, sigma_text.parse(RULE))
     assert len(rows) == 13
     assert {row["status"] for row in rows} == {"not_installed"}

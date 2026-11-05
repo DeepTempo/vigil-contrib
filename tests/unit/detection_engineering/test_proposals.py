@@ -219,8 +219,10 @@ def test_an_unproven_rule_converts_only_with_a_persons_written_reason(
     assert accepted["by"] == "dana.reviewer"
 
 
-@pytest.mark.skipif(targets.pysigma_installed(), reason="this install has pySigma")
-def test_without_pysigma_convert_stays_put_and_reports_each_target(replayed):
+def test_without_pysigma_convert_stays_put_and_reports_each_target(
+    replayed, monkeypatch
+):
+    monkeypatch.setattr(targets, "pysigma_installed", lambda: False)
     view = proposals.convert(replayed["proposal_id"], "dana.reviewer")
     assert view["state"] == "replayed"
     evidence = view["latest"]["convert"]["evidence"]

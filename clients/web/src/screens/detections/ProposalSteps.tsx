@@ -385,7 +385,7 @@ function ConvertStep({ proposal, canWrite, busy, run }: StepProps) {
           <details>
             <summary style={{ cursor: 'pointer', fontSize: 12.5 }}>Paste your own query for a target</summary>
             <div className="de-form" style={{ marginTop: 8 }}>
-              <p className="de-note">Vigil&apos;s overlay stages a Splunk or an Elastic copy. Without pySigma, a pasted query is how a rule reaches shadow, and it stays labelled as pasted.</p>
+              <p className="de-note">Vigil&apos;s overlay stages a Splunk or an Elastic copy. A query you paste replaces the converted one for that target, and it stays labelled as pasted.</p>
               <label>Splunk search<textarea className="de-text mono" rows={3} spellCheck={false} data-testid="de-paste-splunk" value={splunk} onChange={(e) => setSplunk(e.target.value)} /></label>
               <label>Elastic Lucene query<textarea className="de-text mono" rows={3} spellCheck={false} value={elastic} onChange={(e) => setElastic(e.target.value)} /></label>
             </div>
