@@ -325,7 +325,11 @@ function RedTeamSection({ draftFor }: { draftFor: (technique: string) => void })
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    detectionsApi.redTeamRuns().then(setRuns).catch((e) => setError(refusal(e, 'Past runs did not load.')))
+    // An upload can answer before this read does, and its run must stay on screen.
+    detectionsApi
+      .redTeamRuns()
+      .then((stored) => setRuns((uploaded) => [...(uploaded ?? []), ...stored.filter((run) => !uploaded?.some((u) => u.uploaded_at === run.uploaded_at))]))
+      .catch((e) => setError(refusal(e, 'Past runs did not load.')))
   }, [])
 
   const upload = async (file: File) => {
