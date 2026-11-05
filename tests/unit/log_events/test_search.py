@@ -279,8 +279,8 @@ def test_a_search_past_its_time_says_so_and_how_to_narrow_it(client, analyst):
         session.execute(
             text(
                 "INSERT INTO log_events (event_id, time, source, summary, search_text) "
-                "SELECT 'slow-' || g, now(), 'sysmon', 'x', repeat('word ', 2000) "
-                "FROM generate_series(1, 30000) g"
+                "SELECT 'slow-' || g, now(), 'sysmon', 'x', repeat('word ', 200) "
+                "FROM generate_series(1, 5000) g"
             )
         )
     from unittest.mock import patch

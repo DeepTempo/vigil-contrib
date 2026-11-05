@@ -50,12 +50,17 @@ def _reads(user: User, permission: str) -> bool:
     return missing_permission(user.user_id, permission) is None
 
 
+def _all_shown(user: User, views: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    reads_findings = _reads(user, _READ_FINDINGS)
+    reads_cases = _reads(user, _READ_CASES)
+    return [
+        proposals.shown_to(view, reads_findings=reads_findings, reads_cases=reads_cases)
+        for view in views
+    ]
+
+
 def _shown(user: User, view: Dict[str, Any]) -> Dict[str, Any]:
-    return proposals.shown_to(
-        view,
-        reads_findings=_reads(user, _READ_FINDINGS),
-        reads_cases=_reads(user, _READ_CASES),
-    )
+    return _all_shown(user, [view])[0]
 
 
 @contextmanager
@@ -140,7 +145,7 @@ def list_proposals(
     current_user: User = Depends(get_current_user),
 ):
     rows = proposals.listing(state.value if state else None)
-    return {"proposals": [_shown(current_user, row) for row in rows]}
+    return {"proposals": _all_shown(current_user, rows)}
 
 
 @router.post("/proposals", dependencies=_WRITE)

@@ -332,6 +332,8 @@ def _stored(record, notes=None):
         "Authorization",
         "Cookie",
         "set-cookie",
+        "secretAccessKey",
+        "private_key",
     ],
 )
 def test_a_credential_field_is_gone_before_the_row_is_stored(key):
@@ -378,6 +380,19 @@ def test_fields_that_only_mention_a_credential_stay(record):
     key = next(iter(record))
     assert stored["raw"][key] == record[key]
     assert "redacted" not in stored["tags"]
+
+
+def test_a_whole_header_is_gone_when_it_is_written_in_text():
+    stored = _stored(
+        {
+            "basic": "Authorization: Basic dXNlcjpwYXNz from 192.0.2.1",
+            "cookies": "Cookie: session=abc123; theme=dark",
+            "quoted": "curl -H 'Authorization: Digest user=bob' http://x.test",
+        }
+    )
+    for secret in ("dXNlcjpwYXNz", "abc123", "dark", "user=bob"):
+        assert secret not in str(stored["raw"]), secret
+    assert "http://x.test" in stored["raw"]["quoted"]
 
 
 def test_redacting_a_credential_does_not_change_which_event_a_row_is():

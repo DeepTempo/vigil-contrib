@@ -55,11 +55,17 @@ REDACTED_TAG = "redacted"
 # A field is a credential when its name ends in one of these. "token_type" and
 # "password_changed" name something about a credential and keep their values.
 _CREDENTIAL_NAME = re.compile(
-    r"(password|passwd|pwd|secret|token|apikey|api_key|authorization|cookie)$"
+    r"(password|passwd|pwd|secret|token|api_?key|authorization|cookie"
+    r"|secret_access_key|private_key)$"
 )
 _BEARER = re.compile(r"\b(bearer)\s+[a-z0-9._~+/=-]+", re.I)
+# These headers run to the end of the line or its closing quote: "Cookie: a=1; b=2" holds two.
+_HEADER_IN_TEXT = re.compile(
+    r"\b(authorization|cookie)(\s*[=:]\s*)[^\r\n'\"]+",
+    re.I,
+)
 _CREDENTIAL_IN_TEXT = re.compile(
-    r"\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)"
+    r"\b(password|passwd|pwd|secret|token|api[_-]?key)"
     r"(\s*[=:]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
     re.I,
@@ -658,9 +664,9 @@ def _names_a_credential(key: str) -> bool:
 
 def _redact_text(text: str) -> str:
     text = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
-    return _CREDENTIAL_IN_TEXT.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text
-    )
+    for pattern in (_HEADER_IN_TEXT, _CREDENTIAL_IN_TEXT):
+        text = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
+    return text
 
 
 def _redacted(value: Any) -> Any:

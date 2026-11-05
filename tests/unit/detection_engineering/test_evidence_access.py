@@ -199,3 +199,19 @@ def test_a_red_team_run_cites_findings_so_reading_them_needs_findings_read(
     upload = {"events": [{"technique_id": "T1059"}]}
     writer = sign_in_with(*DETECTIONS)
     assert writer.post(f"{BASE}/red-team", json=upload).status_code == 403
+
+
+def test_listing_proposals_checks_permissions_once_not_per_row(sign_in_with, db):
+    from unittest.mock import patch
+
+    from services.api.routers import detection_engineering as route
+
+    for index in range(5):
+        proposals.create(sigma=RULE, title=f"Rule {index}", actor="dana.reviewer")
+    client = sign_in_with("detections.read")
+    with patch.object(
+        route, "missing_permission", wraps=route.missing_permission
+    ) as checked:
+        rows = client.get(f"{BASE}/proposals").json()["proposals"]
+    assert len(rows) == 5
+    assert checked.call_count <= 2

@@ -8,7 +8,6 @@ import { HOME_PERM, START_PERM } from './landing'
 /** The only permission check in the app; ProtectedRoute handles auth alone.
  *  Screens absent here are ungated, and DEV_MODE grants everything. */
 export const SCREEN_PERMS: Partial<Record<ConsoleScreenKey, string>> = {
-  // Its route also needs findings.read: see NEEDS_ALSO.
   cases: 'cases.read',
   home: HOME_PERM,
   medic: 'medic.read',
