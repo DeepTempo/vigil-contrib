@@ -38,7 +38,9 @@ const fmtNum = (n: number) => n.toLocaleString()
 
 // A person's promotion through a detection proposal queues no run, only the rollout sweep does.
 const deployTargetHelp = (format: string) =>
-  `When one of Vigil's ${formatName(format)} rules goes live on its own after a quiet week, an agent opens a pull request adding it here; it waits for approval. A rule a person promotes through a detection proposal opens none.`
+  format === 'elastic'
+    ? `When one of Vigil's ${formatName(format)} rules goes live on its own after a quiet week, an agent opens a pull request adding it here; it waits for approval. A rule a person promotes through a detection proposal opens none.`
+    : `Vigil's ${formatName(format)} rules do not go live on their own yet, so this opens no pull request for now.`
 
 // Formats whose live overlay rules Vigil offers to a customer git repo by pull request.
 const DEPLOY_FORMATS = ['splunk', 'elastic']
