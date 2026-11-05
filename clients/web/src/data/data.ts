@@ -139,6 +139,6 @@ export const TITLES: Record<ConsoleScreenKey, [string, string]> = {
   detections: ['Detection engineering', 'From a missed attack step to a reviewed rule'],
   autonomy: ['Autonomy', 'What Vigil may decide on its own, and how it earned that'],
   logs: ['Logs', 'Every telemetry source in one table and one schema'],
-  graph: ['Entity graph', 'Who talks to whom in the stored logs: roles, gaps and attack paths'],
+  graph: ['Entity graph', 'Who talks to whom in the stored logs: roles, gaps and observed links'],
   incident: ['Incident', 'A case as one story, with the evidence behind each step'],
 }

@@ -59,6 +59,12 @@ ENTITY_KEYS: Mapping[str, tuple[str, ...]] = {
     "user": ("usernames", "users", "user"),
 }
 # Where a source names the rule that fired, best name first.
+# What one answer carries. A case can hold thousands of alerts, and a browser cannot list them.
+STEPS_PAGE = 200
+MAX_STEPS_PAGE = 500
+ENTITIES_SENT = 200
+ENTITY_FINDINGS_SENT = 50
+
 RULE_KEYS = (
     "rule_name",
     "rule_description",
@@ -177,6 +183,8 @@ class Entity(BaseModel):
     kind: str
     value: str
     finding_ids: list[str]
+    # How many alerts name it. ``finding_ids`` holds only the first of a long list.
+    named_by: int = 0
 
 
 class IntelItem(BaseModel):
@@ -226,12 +234,17 @@ class Story(BaseModel):
     sources: list[SourceCount]
     verdict: Verdict
     report: Optional[Report] = None
+    # One page of steps, oldest first. ``alerts`` and ``steps_total`` count them all.
     steps: list[Step]
+    steps_total: int
+    steps_offset: int = 0
     reasons: list[Reason]
     actions: list[Action]
     entities: list[Entity]
+    entities_total: int = 0
     intel: list[IntelItem]
     unmatched_steps: list[Step]
+    unmatched_total: int = 0
     log_events: int
     rules_loaded: int
     viewer: Viewer = Field(default_factory=Viewer)
@@ -248,7 +261,8 @@ class IncidentRow(BaseModel):
     alerts: int
     sources: list[SourceCount]
     verdict: Verdict
-    unmatched_steps: int
+    # None on a case too large to walk for a list. Its own page counts them.
+    unmatched_steps: Optional[int] = None
     log_events: int
     pending_approvals: Optional[int] = None
 
@@ -789,7 +803,7 @@ _NO_VERDICT = Verdict(
 )
 
 
-def _verdict(facts: StoryFacts) -> Verdict:
+def verdict_of(facts: StoryFacts) -> Verdict:
     closure = facts.closure
     if facts.case.status == CLOSED and closure is not None:
         try:
@@ -832,11 +846,26 @@ def _source_counts(steps: Iterable[Step]) -> list[SourceCount]:
     ]
 
 
-def build_story(facts: StoryFacts) -> Story:
+def _entities_to_send(overlap: Sequence[Entity]) -> list[Entity]:
+    return [
+        Entity(
+            kind=entity.kind,
+            value=entity.value,
+            finding_ids=entity.finding_ids[:ENTITY_FINDINGS_SENT],
+            named_by=len(entity.finding_ids),
+        )
+        for entity in overlap[:ENTITIES_SENT]
+    ]
+
+
+def build_story(
+    facts: StoryFacts, steps_offset: int = 0, steps_limit: int = STEPS_PAGE
+) -> Story:
     steps = sorted(
         (_step(finding, facts.rules) for finding in facts.findings),
         key=lambda step: (step.at, step.finding_id),
     )
+    unmatched = [s for s in steps if s.coverage is Coverage.NO_RULE]
     pending_first = sorted(
         facts.approvals,
         key=lambda a: (a.status != ActionStatus.PENDING.value, a.created_at),
@@ -850,12 +879,15 @@ def build_story(facts: StoryFacts) -> Story:
         opened_at=facts.case.created_at,
         alerts=len(steps),
         sources=_source_counts(steps),
-        verdict=_verdict(facts),
+        verdict=verdict_of(facts),
         report=facts.report,
-        steps=steps,
+        steps=steps[steps_offset : steps_offset + steps_limit],
+        steps_total=len(steps),
+        steps_offset=steps_offset,
         reasons=[reason for read in _REASONS for reason in read(facts, steps)],
         actions=[_action(a, facts, steps) for a in pending_first],
-        entities=list(facts.overlap),
+        entities=_entities_to_send(list(facts.overlap)),
+        entities_total=len(facts.overlap),
         intel=[
             IntelItem(
                 kind=ioc.kind,
@@ -868,24 +900,13 @@ def build_story(facts: StoryFacts) -> Story:
             )
             for ioc in facts.iocs
         ],
-        unmatched_steps=[s for s in steps if s.coverage is Coverage.NO_RULE],
+        unmatched_steps=unmatched[:STEPS_PAGE],
+        unmatched_total=len(unmatched),
         log_events=facts.logs.events,
         rules_loaded=facts.rules.loaded,
         viewer=facts.viewer,
     )
 
 
-def incident_row(story: Story, pending_approvals: Optional[int]) -> IncidentRow:
-    return IncidentRow(
-        case_id=story.case_id,
-        title=story.title,
-        status=story.status,
-        priority=story.priority,
-        opened_at=story.opened_at,
-        alerts=story.alerts,
-        sources=story.sources,
-        verdict=story.verdict,
-        unmatched_steps=len(story.unmatched_steps),
-        log_events=story.log_events,
-        pending_approvals=pending_approvals,
-    )
+def step_coverage(finding: FindingFacts, rules: RuleInventory) -> Coverage:
+    return _step(finding, rules).coverage

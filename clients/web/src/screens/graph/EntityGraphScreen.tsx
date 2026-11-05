@@ -123,7 +123,7 @@ function limitsOf(g: EntityGraph): string[] {
     out.push(`Showing the newest ${rows.cap.toLocaleString()} of ${(rows.read + rows.capped).toLocaleString()} flow events in this window. Narrow the window to see the rest.`)
   }
   if (truncated.edges > 0) {
-    out.push(`${truncated.edges.toLocaleString()} links are not drawn. The ones kept are those behind a finding or the attack path, then the busiest.`)
+    out.push(`${truncated.edges.toLocaleString()} links are not drawn. The ones kept are those behind a finding or between this case's entities, then the busiest.`)
   }
   if (c.with_bytes < c.flows) {
     out.push(`${(c.flows - c.with_bytes).toLocaleString()} of ${c.flows.toLocaleString()} flows have no byte counts. Roles from them stop at possible, and findings that need a service to have answered are marked unconfirmed.`)
@@ -265,6 +265,9 @@ export default function EntityGraphScreen({ go }: ConsoleScreenProps) {
             The entity graph is built from stored log events that name both a source and a destination, as network, firewall and sign-in logs do.
             Port and byte counts sharpen the roles. LogLM scores add the anomaly overlay.
           </p>
+          <p className="x1-muted" style={{ margin: 0 }} data-testid="graph-by-upload">
+            Logs arrive by upload on the Logs screen. Alerts from a connected SIEM or EDR are findings, and they do not fill this screen.
+          </p>
           {sel && <p className="x1-muted" style={{ margin: 0 }}>{sel} cannot be shown until a window holds flows. Choose a wider window to look for it.</p>}
           {skipped && <p className="x1-muted" style={{ margin: 0 }}>{skipped}</p>}
           {error && <p className="x1-error" role="alert" style={{ margin: 0 }}>{error}</p>}
@@ -312,7 +315,7 @@ export default function EntityGraphScreen({ go }: ConsoleScreenProps) {
             <b>{path.title}</b>
             <div className="x1-muted" style={{ fontSize: 12.5 }}>
               {path.hops.length > 0
-                ? `${path.hops.length} ${path.hops.length === 1 ? 'link' : 'links'} between ${path.entities.length} of this case's entities in this window.`
+                ? `Observed links between this case's entities: ${path.hops.length} ${path.hops.length === 1 ? 'link joins' : 'links join'} ${path.entities.length} of them in this window. Logs show they talked, not that one step caused the next.`
                 : `No flow in this window links this case's entities. ${path.entities.length} of them appear here.`}
               {path.not_seen.length > 0 && ` Not seen in these flows: ${path.not_seen.join(', ')}.`}
             </div>
@@ -323,7 +326,7 @@ export default function EntityGraphScreen({ go }: ConsoleScreenProps) {
       <div className="x1-row" style={{ justifyContent: 'space-between' }}>
         <div className="x1-row">
           {path && (
-            <button type="button" className="x1-chipbtn" aria-pressed={showPath} onClick={() => setShowPath(!showPath)}>{path.case_id} attack path</button>
+            <button type="button" className="x1-chipbtn" aria-pressed={showPath} onClick={() => setShowPath(!showPath)}>Observed links between this case's entities</button>
           )}
           <button
             type="button"
@@ -340,7 +343,7 @@ export default function EntityGraphScreen({ go }: ConsoleScreenProps) {
         </div>
         <div className="x1-legend">
           {Object.entries(GROUP_COLOR).map(([g, c]) => <span key={g}><i style={{ background: c }} />{g}</span>)}
-          {path && <span><i className="ln" />attack path</span>}
+          {path && <span><i className="ln" />Observed links between this case's entities</span>}
           {graph.loglm && <span><i className="ln anom" />Unusual (LogLM)</span>}
         </div>
       </div>

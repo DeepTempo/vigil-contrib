@@ -180,7 +180,9 @@ function storySnapshot(story: Story): string {
   return [
     `Incident ${story.case_id}: ${story.title}. Priority ${story.priority}, status ${story.status}. ${story.verdict.label}: ${story.verdict.basis}`,
     `${story.alerts} alerts from ${story.sources.map((s) => s.source).join(', ')}.`,
-    'Steps (time UTC | step | technique | source | rule):',
+    story.steps.length < story.steps_total
+      ? `First ${story.steps.length} of ${story.steps_total} steps (time UTC | step | technique | source | rule):`
+      : 'Steps (time UTC | step | technique | source | rule):',
     ...story.steps.map((s) => [utc(s.at, true), s.label, s.technique?.id ?? '-', s.source, s.caught_by ?? s.coverage].join(' | ')),
     'Reasons:',
     ...story.reasons.map((r) => `- ${r.text}`),
@@ -190,7 +192,9 @@ function storySnapshot(story: Story): string {
   ].join('\n')
 }
 
-function StoryView({ story, reload, openChat, openCase }: { story: Story; reload: () => void } & Pick<ConsoleScreenProps, 'openChat' | 'openCase'>) {
+const STEPS_MORE = 200
+
+function StoryView({ story, reload, showMoreSteps, openChat, openCase }: { story: Story; reload: () => void; showMoreSteps: () => void } & Pick<ConsoleScreenProps, 'openChat' | 'openCase'>) {
   const [popup, setPopup] = useState<string | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -276,7 +280,13 @@ function StoryView({ story, reload, openChat, openCase }: { story: Story; reload
               <StepRow key={step.finding_id} step={step} story={story} withDate={withDate} openFinding={setPopup} />
             ))}
           </div>
-          {story.rules_loaded === 0 && story.unmatched_steps.length > 0 && (
+          {story.steps.length < story.steps_total && (
+            <div className="x1-row" style={{ marginTop: 10, justifyContent: 'space-between' }} data-testid="incident-steps-more">
+              <span className="x1-muted" style={{ fontSize: 12.5 }}>Showing the first {story.steps.length.toLocaleString()} of {story.steps_total.toLocaleString()} steps.</span>
+              <button type="button" className="btn ghost" onClick={showMoreSteps}>Show {Math.min(STEPS_MORE, story.steps_total - story.steps.length).toLocaleString()} more</button>
+            </div>
+          )}
+          {story.rules_loaded === 0 && story.unmatched_total > 0 && (
             <div className="x1-card x1-note" style={{ marginTop: 10 }}>The rule inventory is empty, so nothing here can be matched to a rule. Rules appear under Detections once a source of rules is synced.</div>
           )}
         </div>
@@ -326,7 +336,7 @@ function StoryView({ story, reload, openChat, openCase }: { story: Story; reload
               <div className="x1-action">
                 <div>
                   <div style={{ color: 'var(--tx0)' }}>Draft a detection for {short(firstGap.label, 60)}</div>
-                  <div className="x1-muted" style={{ fontSize: 12 }}>{plural(story.unmatched_steps.length, 'step')} without a rule behind {story.unmatched_steps.length === 1 ? 'it' : 'them'}.</div>
+                  <div className="x1-muted" style={{ fontSize: 12 }}>{plural(story.unmatched_total, 'step')} without a rule behind {story.unmatched_total === 1 ? 'it' : 'them'}.</div>
                 </div>
                 <Link className="btn primary" to={detectionLink(story.case_id, firstGap.finding_id)}>Draft detection</Link>
               </div>
@@ -346,15 +356,15 @@ function StoryView({ story, reload, openChat, openCase }: { story: Story; reload
           {story.entities.length === 0 && <p className="x1-muted" style={{ margin: 0 }}>These alerts name no host, user, address, domain, URL or hash.</p>}
           <div className="x1-row">
             {story.entities.slice(0, ENTITIES_SHOWN).map((entity) => {
-              const inner = <>{entity.kind} {entity.value} <span className="n">{entity.finding_ids.length}</span></>
+              const inner = <>{entity.kind} {entity.value} <span className="n">{entity.named_by}</span></>
               const key = entity.kind + entity.value
-              const title = `Named by ${plural(entity.finding_ids.length, 'alert')}`
+              const title = `Named by ${plural(entity.named_by, 'alert')}`
               if (!hasLogs) return <span key={key} className="x1-chipbtn" style={{ cursor: 'default' }} title={title}>{inner}</span>
               const target = entity.kind === 'host' || entity.kind === 'ip' ? `/graph?case=${here}` : `/logs?case=${here}`
               return <Link key={key} className="x1-chipbtn" to={target} title={title}>{inner}</Link>
             })}
           </div>
-          {story.entities.length > ENTITIES_SHOWN && <p className="x1-muted" style={{ fontSize: 12, margin: '8px 0 0' }}>And {story.entities.length - ENTITIES_SHOWN} more.</p>}
+          {story.entities_total > ENTITIES_SHOWN && <p className="x1-muted" style={{ fontSize: 12, margin: '8px 0 0' }}>And {(story.entities_total - ENTITIES_SHOWN).toLocaleString()} more.</p>}
         </div>
         <div className="x1-card">
           <h3>Threat intel</h3>
@@ -380,7 +390,7 @@ function StoryView({ story, reload, openChat, openCase }: { story: Story; reload
       <div className="x1-card">
         <h3>Keep going</h3>
         <div className="x1-row">
-          {hasLogs && <Link className="btn ghost" to={`/graph?case=${here}`}>Show the attack path on the entity graph</Link>}
+          {hasLogs && <Link className="btn ghost" to={`/graph?case=${here}`}>Show observed links between this case's entities</Link>}
           {hasLogs && <Link className="btn ghost" to={`/logs?case=${here}`}>See the {story.log_events} raw events</Link>}
           <button type="button" className="btn ghost" onClick={() => openChat(`Summarise incident ${story.case_id} in five sentences.`)}>Ask Vigil about this incident</button>
         </div>
@@ -454,11 +464,18 @@ function IncidentCase({ caseId, openChat, openCase, go }: { caseId: string } & P
     setFailed(null)
     load()
   }, [load])
+  const showMoreSteps = useCallback(() => {
+    if (!story) return
+    incidentsApi.get(caseId, { steps_offset: story.steps.length, steps_limit: STEPS_MORE }).then(
+      (res) => setStory((held) => (held ? { ...held, steps: [...held.steps, ...res.data.steps] } : held)),
+      (err) => setFailed(errorText(err, 'Could not read more of this incident')),
+    )
+  }, [caseId, story])
   if (failed) {
     return <EmptyState icon="alert" title={`No incident at ${caseId}`} body={failed} primary={{ label: 'All incidents', onClick: () => go('incident', { search: '' }) }} secondary={{ label: 'Open the case', onClick: () => openCase(caseId) }} />
   }
   if (!story) return <EmptyState loading icon="clock" title="Loading the incident…" />
-  return <StoryView story={story} reload={load} openChat={openChat} openCase={openCase} />
+  return <StoryView story={story} reload={load} showMoreSteps={showMoreSteps} openChat={openChat} openCase={openCase} />
 }
 
 export default function IncidentDetailScreen({ go, openChat, openCase }: ConsoleScreenProps) {

@@ -8,6 +8,7 @@ import { HOME_PERM, START_PERM } from './landing'
 /** The only permission check in the app; ProtectedRoute handles auth alone.
  *  Screens absent here are ungated, and DEV_MODE grants everything. */
 export const SCREEN_PERMS: Partial<Record<ConsoleScreenKey, string>> = {
+  // Its route also needs findings.read: see NEEDS_ALSO.
   cases: 'cases.read',
   home: HOME_PERM,
   medic: 'medic.read',
@@ -18,6 +19,12 @@ export const SCREEN_PERMS: Partial<Record<ConsoleScreenKey, string>> = {
   logs: 'findings.read',
   graph: 'findings.read',
   incident: 'cases.read',
+}
+
+/** A screen whose route answers only with a second read too. Without it the nav would lead to a
+ *  page that can only say 404. */
+export const NEEDS_ALSO: Partial<Record<ConsoleScreenKey, string>> = {
+  incident: 'findings.read',
 }
 
 /** key is a plain string, so extension screens can join the nav row */
@@ -56,6 +63,8 @@ export function useConsoleNav() {
   const visibleNav = navItems.filter(([, , key, gate]) => {
     const perm = screenPerms[key]
     if (perm && !hasPermission(perm)) return false
+    const also = NEEDS_ALSO[key as ConsoleScreenKey]
+    if (also && !hasPermission(also)) return false
     return !gate?.integration || enabledIntegrations.includes(gate.integration)
   })
   return { navItems, titles, screenPerms, visibleNav }

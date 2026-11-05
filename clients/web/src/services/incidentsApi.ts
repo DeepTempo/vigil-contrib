@@ -68,7 +68,9 @@ export interface IncidentAction {
 export interface StoryEntity {
   kind: string
   value: string
+  /** The first of a long list. named_by counts them all. */
   finding_ids: string[]
+  named_by: number
 }
 
 export interface IntelItem {
@@ -112,12 +114,17 @@ export interface Story {
   sources: SourceCount[]
   verdict: Verdict
   report: IncidentReport | null
+  /** One page of steps. steps_total counts them all. */
   steps: Step[]
+  steps_total: number
+  steps_offset: number
   reasons: Reason[]
   actions: IncidentAction[]
   entities: StoryEntity[]
+  entities_total: number
   intel: IntelItem[]
   unmatched_steps: Step[]
+  unmatched_total: number
   log_events: number
   rules_loaded: number
   viewer: { can_read_approvals: boolean; can_decide: boolean }
@@ -132,7 +139,8 @@ export interface IncidentRow {
   alerts: number
   sources: SourceCount[]
   verdict: Verdict
-  unmatched_steps: number
+  /** Null on a case too large to walk for a list. */
+  unmatched_steps: number | null
   log_events: number
   pending_approvals: number | null
 }
@@ -172,6 +180,7 @@ export interface AlertTriage {
 
 export const incidentsApi = {
   list: (params?: { status?: 'open' | 'all'; limit?: number }) => api.get<IncidentList>('/incidents', { params }),
-  get: (caseId: string) => api.get<Story>(`/incidents/${encodeURIComponent(caseId)}`),
+  get: (caseId: string, params?: { steps_offset?: number; steps_limit?: number }) =>
+    api.get<Story>(`/incidents/${encodeURIComponent(caseId)}`, { params }),
   alertTriage: (hours: number) => api.get<AlertTriage>('/alert-triage', { params: { hours } }),
 }

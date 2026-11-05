@@ -28,7 +28,7 @@ import ErrorBoundary from './ErrorBoundary'
 import { ToastProvider } from './toast'
 import { useDesktopNotifications } from './useDesktopNotifications'
 import { useNavPrefs, writeNavPrefs } from './navPrefs'
-import { SCREEN_PERMS, splitNav, useConsoleNav, type NavItem } from './consoleNav'
+import { NEEDS_ALSO, SCREEN_PERMS, splitNav, useConsoleNav, type NavItem } from './consoleNav'
 import type { ChatSeed, ConsoleScreenGoOptions, ConsoleScreenProps, SeedDocument, SettingsSectionKey } from '../shared/types'
 import type { Schema } from '../services/apiTypes'
 import DashboardScreen from '../screens/dashboard/DashboardScreen'
@@ -138,7 +138,9 @@ function SocConsoleInner() {
   const landingLabel = landing === 'home' ? 'Home' : 'Overview'
   const current: string = valid ? (screen as string) : landing
   const resolvingExtension = !valid && screen !== undefined && extLoading
-  const currentPerm = valid ? screenPerms[current] : undefined
+  const currentPerm = valid
+    ? [screenPerms[current], NEEDS_ALSO[current as keyof typeof NEEDS_ALSO]].find((perm) => perm && !hasPermission(perm)) ?? screenPerms[current]
+    : undefined
   const allowed = !currentPerm || hasPermission(currentPerm)
 
   const { scheme } = useColorScheme()

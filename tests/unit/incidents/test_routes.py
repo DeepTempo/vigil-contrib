@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import text
 
 from core.response.approval_service import ActionType, ApprovalService
 from core.storage.models import (
@@ -432,3 +433,114 @@ def test_alert_triage_is_empty_on_a_clean_install_and_gated(client, sign_in):
     assert empty["kinds"] == []
     sign_in(NOBODY)
     assert client.get("/api/alert-triage").status_code == 403
+
+
+def _big_incident(case_id="case-big", count=5000):
+    """A case holding ``count`` alerts, from SQL so the test measures the read."""
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO cases (case_id, title, status, priority, timeline) "
+                "VALUES (:c, 'Big case', 'open', 'high', '[]'::jsonb)"
+            ),
+            {"c": case_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO findings (finding_id, title, data_source, severity, timestamp, "
+                "entity_context) SELECT 'big-' || g, 'Big alert ' || g, "
+                "CASE WHEN g % 2 = 0 THEN 'edr' ELSE 'ndr' END, 'low', "
+                "now() + g * interval '1 second', "
+                "jsonb_build_object('hostnames', jsonb_build_array('wks-' || g, 'shared-host')) "
+                "FROM generate_series(1, :n) g"
+            ),
+            {"n": count},
+        )
+        session.execute(
+            text(
+                "INSERT INTO case_findings (case_id, finding_id, added_at) "
+                "SELECT :c, 'big-' || g, now() FROM generate_series(1, :n) g"
+            ),
+            {"c": case_id, "n": count},
+        )
+    return case_id
+
+
+def test_a_huge_case_answers_one_page_of_steps_and_says_how_many(client, sign_in):
+    sign_in("role-admin")
+    case_id = _big_incident()
+    answer = client.get(f"/api/incidents/{case_id}")
+    assert answer.status_code == 200, answer.text
+    story = answer.json()
+    assert story["alerts"] == 5000
+    assert story["steps_total"] == 5000
+    assert story["steps_offset"] == 0
+    assert len(story["steps"]) == 200
+    assert len(answer.content) < 400_000
+
+    shared = next(e for e in story["entities"] if e["value"] == "shared-host")
+    assert shared["named_by"] == 5000
+    assert len(shared["finding_ids"]) <= 50
+    assert story["entities_total"] == 5001
+    assert len(story["entities"]) <= 200
+
+    second = client.get(
+        f"/api/incidents/{case_id}", params={"steps_offset": 200, "steps_limit": 50}
+    ).json()
+    assert second["steps_offset"] == 200
+    assert len(second["steps"]) == 50
+    assert second["steps"][0]["finding_id"] == "big-201"
+    assert (
+        client.get(
+            f"/api/incidents/{case_id}", params={"steps_limit": 100_000}
+        ).status_code
+        == 422
+    )
+
+
+def test_the_list_does_not_read_each_alert_of_a_huge_case(client, sign_in):
+    from sqlalchemy import event
+
+    from core.storage.connection import get_db_manager
+
+    sign_in("role-admin")
+    _big_incident()
+    fetched = []
+
+    def count(_conn, cursor, _statement, _params, _context, _many):
+        fetched.append(max(cursor.rowcount, 0))
+
+    engine = get_db_manager().engine
+    event.listen(engine, "after_cursor_execute", count)
+    try:
+        body = client.get("/api/incidents").json()
+    finally:
+        event.remove(engine, "after_cursor_execute", count)
+    row = body["items"][0]
+    assert row["alerts"] == 5000
+    assert {s["source"]: s["alerts"] for s in row["sources"]} == {
+        "edr": 2500,
+        "ndr": 2500,
+    }
+    assert row["unmatched_steps"] is None
+    assert sum(fetched) < 200
+
+
+def test_the_lists_counts_agree_with_the_story(client, sign_in):
+    from core.storage.models import FindingMitrePrediction
+
+    sign_in("role-admin")
+    case_id = add_incident(findings=("f-1", "f-2", "f-3", "f-4"))
+    with unit_of_work() as session:
+        session.add(FindingMitrePrediction(finding_id="f-1", technique_id="T1059"))
+        session.get(Finding, "f-2").anomaly_score = 0.9
+        session.get(Finding, "f-3").entity_context = {
+            "hostnames": ["wks-7"],
+            "rule_name": "Named rule",
+        }
+    story = client.get(f"/api/incidents/{case_id}").json()
+    row = client.get("/api/incidents").json()["items"][0]
+    assert row["unmatched_steps"] == story["unmatched_total"] == 2
+    assert row["alerts"] == story["alerts"]
+    assert row["sources"] == story["sources"]
+    assert row["verdict"] == story["verdict"]

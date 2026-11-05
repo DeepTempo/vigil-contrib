@@ -266,3 +266,15 @@ def test_the_operator_can_name_the_internal_ranges(client, analyst, monkeypatch)
     assert body["internal_ranges"] == ["203.0.113.0/24"]
     nodes = by_id(body["nodes"])
     assert nodes[EXT]["internal"] and not nodes[WS1]["internal"]
+
+
+def test_the_window_is_an_aware_utc_range():
+    from datetime import datetime, timedelta
+
+    from core.entity_graph.store import entity_graph_payload
+
+    window = entity_graph_payload(1)["window"]
+    start = datetime.fromisoformat(window["start"])
+    end = datetime.fromisoformat(window["end"])
+    assert start.utcoffset() == timedelta(0)
+    assert end - start == timedelta(hours=1)

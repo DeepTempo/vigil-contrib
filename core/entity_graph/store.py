@@ -6,7 +6,7 @@ import ipaddress
 import logging
 import os
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import and_, func, select
@@ -20,7 +20,6 @@ from core.entity_graph.features import (
 )
 from core.storage.models import Case, Finding, LogEvent, case_findings
 from core.storage.unit_of_work import unit_of_work
-from core.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +106,7 @@ def _flow_rows(session, since, limit: int) -> list[dict[str, Any]]:
 def entity_graph_payload(
     hours: int, case_id: Optional[str] = None, row_cap: int = ROW_CAP
 ) -> dict[str, Any]:
-    until = utcnow()
+    until = datetime.now(timezone.utc)
     since = until - timedelta(hours=hours)
     with unit_of_work() as session:
         case = _case_ref(session, case_id) if case_id else None

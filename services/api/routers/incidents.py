@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.auth.permissions import APPROVE_PERMISSION, missing_permission
 from core.incidents.read import NotAnIncident, list_incidents, read_story
-from core.incidents.story import IncidentList, Story, Viewer
+from core.incidents.story import (
+    MAX_STEPS_PAGE,
+    STEPS_PAGE,
+    IncidentList,
+    Story,
+    Viewer,
+)
 from core.routing import Auth, RouterMeta
 from core.storage.models import User
 from services.api.middleware.auth import get_current_user
@@ -51,9 +57,14 @@ def get_incidents(
 
 
 @router.get("/{case_id}", response_model=Story)
-def get_incident(case_id: str, viewer: Viewer = Depends(_reader)):
+def get_incident(
+    case_id: str,
+    steps_offset: int = Query(0, ge=0),
+    steps_limit: int = Query(STEPS_PAGE, ge=1, le=MAX_STEPS_PAGE),
+    viewer: Viewer = Depends(_reader),
+):
     try:
-        story = read_story(case_id, viewer)
+        story = read_story(case_id, viewer, steps_offset, steps_limit)
     except NotAnIncident as refused:
         raise HTTPException(status_code=404, detail=str(refused))
     if story is None:

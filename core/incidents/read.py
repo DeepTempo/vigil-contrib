@@ -4,33 +4,40 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import Text, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY, array
+from sqlalchemy.orm import noload
 
 from core.cases.case_records_service import list_case_investigations, list_case_runs
 from core.cases.case_status import CLOSED
 from core.config import get_integration_config, is_demo_mode, is_integration_enabled
 from core.incidents.story import (
     MIN_FINDINGS,
+    RULE_KEYS,
+    STEPS_PAGE,
     UNUSUAL_SCORE,
     CaseFacts,
     ClosureFacts,
+    Coverage,
     FindingFacts,
     HuntVerdictFacts,
     IncidentList,
+    IncidentRow,
     InstallFacts,
     IocFacts,
     LogFacts,
     Report,
     RuleInventory,
+    SourceCount,
     Story,
     StoryFacts,
     Viewer,
     build_story,
     entity_overlap,
-    incident_row,
+    step_coverage,
+    verdict_of,
 )
 from core.response.approval_service import (
     ApprovalService,
@@ -46,6 +53,8 @@ from core.storage.models import (
     CaseIOC,
     DetectionRule,
     EpisodicVerdict,
+    Finding,
+    FindingMitrePrediction,
     Investigation,
     LogEvent,
     WorkflowRun,
@@ -55,6 +64,8 @@ from core.storage.unit_of_work import unit_of_work
 
 # More than a page can show and more than a decision needs.
 APPROVALS_READ = 200
+# A list counts uncovered steps only on cases up to this size.
+LIST_WALK_MAX = 1000
 ACTIVE_RULE = "active"
 COMPLETED = "completed"
 
@@ -75,21 +86,93 @@ def _utc(value: Optional[datetime]) -> Optional[datetime]:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _finding_facts(finding) -> FindingFacts:
-    return FindingFacts(
-        finding_id=finding.finding_id,
-        created_at=finding.created_at,
-        data_source=finding.data_source,
-        title=finding.title,
-        description=finding.description,
-        severity=finding.severity,
-        timestamp=finding.timestamp,
-        anomaly_score=finding.anomaly_score,
-        entity_context=finding.entity_context,
-        labels=[
-            (row.technique_id, row.confidence) for row in finding.mitre_prediction_rows
-        ],
+def _labels_of(session, finding_ids) -> Dict[str, List[Tuple[str, Optional[float]]]]:
+    labels: Dict[str, List[Tuple[str, Optional[float]]]] = defaultdict(list)
+    for finding_id, technique, confidence in session.execute(
+        select(
+            FindingMitrePrediction.finding_id,
+            FindingMitrePrediction.technique_id,
+            FindingMitrePrediction.confidence,
+        ).where(FindingMitrePrediction.finding_id.in_(finding_ids))
+    ):
+        labels[finding_id].append((technique, confidence))
+    return labels
+
+
+def _case_finding_facts(session, case_id: str) -> List[FindingFacts]:
+    """The columns a story reads, so a large case does not load each alert's whole row."""
+    in_case = select(case_findings.c.finding_id).where(
+        case_findings.c.case_id == case_id
     )
+    labels = _labels_of(session, in_case)
+    rows = session.execute(
+        select(
+            Finding.finding_id,
+            Finding.created_at,
+            Finding.data_source,
+            Finding.title,
+            Finding.description,
+            Finding.severity,
+            Finding.timestamp,
+            Finding.anomaly_score,
+            Finding.entity_context,
+        ).where(Finding.finding_id.in_(in_case))
+    )
+    return [FindingFacts(*row, labels=labels.get(row.finding_id, ())) for row in rows]
+
+
+def _unmatched_counts(
+    session, sizes: Mapping[str, int], rules: RuleInventory
+) -> Dict[str, int]:
+    """How many alerts of each case no rule covers, for cases small enough to walk in a list."""
+    small = [case_id for case_id, size in sizes.items() if size <= LIST_WALK_MAX]
+    if not small:
+        return {}
+    in_cases = select(case_findings.c.finding_id).where(
+        case_findings.c.case_id.in_(small)
+    )
+    labels = _labels_of(session, in_cases)
+    context = func.jsonb_build_object(
+        *(part for key in RULE_KEYS for part in (key, Finding.entity_context[key]))
+    )
+    counts = dict.fromkeys(small, 0)
+    for row in session.execute(
+        select(
+            case_findings.c.case_id,
+            Finding.finding_id,
+            Finding.created_at,
+            Finding.data_source,
+            Finding.anomaly_score,
+            context.label("entity_context"),
+        )
+        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
+        .where(case_findings.c.case_id.in_(small))
+    ):
+        finding = FindingFacts(
+            finding_id=row.finding_id,
+            created_at=row.created_at,
+            data_source=row.data_source,
+            anomaly_score=row.anomaly_score,
+            entity_context=row.entity_context,
+            labels=labels.get(row.finding_id, ()),
+        )
+        if step_coverage(finding, rules) is Coverage.NO_RULE:
+            counts[row.case_id] += 1
+    return counts
+
+
+def _source_counts_by_case(session, ids) -> Dict[str, List[SourceCount]]:
+    rows = session.execute(
+        select(case_findings.c.case_id, Finding.data_source, func.count())
+        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
+        .where(case_findings.c.case_id.in_(ids))
+        .group_by(case_findings.c.case_id, Finding.data_source)
+        .order_by(func.count().desc(), Finding.data_source)
+    )
+    counts: Dict[str, List[SourceCount]] = defaultdict(list)
+    for case_id, source, alerts in rows:
+        counts[case_id].append(SourceCount(source=source, alerts=alerts))
+    return counts
 
 
 def _case_facts(case: Case) -> CaseFacts:
@@ -277,17 +360,23 @@ def _case_approvals(
     return [a for a in actions if a is not None and case_id in case_ids_for(a)]
 
 
-def read_story(case_id: str, viewer: Viewer) -> Optional[Story]:
-    """The story, or None when no such case. Raises ``NotAnIncident``."""
+def read_story(
+    case_id: str,
+    viewer: Viewer,
+    steps_offset: int = 0,
+    steps_limit: int = STEPS_PAGE,
+) -> Optional[Story]:
+    """The story with one page of its steps, or None when no such case. Raises
+    ``NotAnIncident``."""
     if is_demo_mode():
         return None
     with unit_of_work() as session:
-        case = session.get(Case, case_id)
+        case = session.get(Case, case_id, options=[noload(Case.findings)])
         if case is None:
             return None
-        if len(case.findings) < MIN_FINDINGS:
-            raise NotAnIncident(case_id, len(case.findings))
-        findings = [_finding_facts(f) for f in case.findings]
+        findings = _case_finding_facts(session, case_id)
+        if len(findings) < MIN_FINDINGS:
+            raise NotAnIncident(case_id, len(findings))
         run_ids = _run_ids_by_case(session, [case_id]).get(case_id, [])
         facts = StoryFacts(
             case=_case_facts(case),
@@ -309,7 +398,7 @@ def read_story(case_id: str, viewer: Viewer) -> Optional[Story]:
             install=_install_facts(),
             viewer=viewer,
         )
-    return build_story(facts)
+    return build_story(facts, steps_offset, steps_limit)
 
 
 def list_incidents(*, open_only: bool, limit: int, viewer: Viewer) -> IncidentList:
@@ -334,6 +423,7 @@ def list_incidents(*, open_only: bool, limit: int, viewer: Viewer) -> IncidentLi
         total = session.scalar(select(func.count()).select_from(Case).where(*wanted))
         cases = (
             session.query(Case)
+            .options(noload(Case.findings))
             .filter(*wanted)
             .order_by(Case.updated_at.desc(), Case.case_id.desc())
             .limit(limit)
@@ -351,23 +441,37 @@ def list_incidents(*, open_only: bool, limit: int, viewer: Viewer) -> IncidentLi
         verdicts = _hunt_verdicts(session, _run_ids_by_case(session, ids))
         logs = _log_facts(session, ids)
         rules = _rule_inventory(session)
-        items = []
-        for case in cases:
-            findings = [_finding_facts(f) for f in case.findings]
-            story = build_story(
-                StoryFacts(
-                    case=_case_facts(case),
-                    findings=findings,
-                    closure=_closure_facts(closures.get(case.case_id)),
-                    hunt_verdicts=verdicts.get(case.case_id, []),
-                    logs=logs.get(case.case_id, LogFacts()),
-                    rules=rules,
-                )
+        sources = _source_counts_by_case(session, ids)
+        sizes = {
+            case_id: sum(count.alerts for count in counts)
+            for case_id, counts in sources.items()
+        }
+        unmatched = _unmatched_counts(session, sizes, rules)
+        items = [
+            IncidentRow(
+                case_id=case.case_id,
+                title=case.title,
+                status=case.status,
+                priority=case.priority,
+                opened_at=case.created_at,
+                alerts=sizes.get(case.case_id, 0),
+                sources=sources.get(case.case_id, []),
+                verdict=verdict_of(
+                    StoryFacts(
+                        case=_case_facts(case),
+                        findings=[],
+                        closure=_closure_facts(closures.get(case.case_id)),
+                        hunt_verdicts=verdicts.get(case.case_id, []),
+                        logs=LogFacts(),
+                        rules=rules,
+                    )
+                ),
+                unmatched_steps=unmatched.get(case.case_id),
+                log_events=logs.get(case.case_id, LogFacts()).events,
+                pending_approvals=(
+                    None if pending is None else pending.get(case.case_id, 0)
+                ),
             )
-            items.append(
-                incident_row(
-                    story,
-                    None if pending is None else pending.get(case.case_id, 0),
-                )
-            )
+            for case in cases
+        ]
     return IncidentList(total=total or 0, items=items)

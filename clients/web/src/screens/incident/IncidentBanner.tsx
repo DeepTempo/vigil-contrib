@@ -21,7 +21,7 @@ export default function IncidentBanner() {
   const facts = [
     `${plural(top.alerts, 'alert')} from ${plural(top.sources.length, 'source')} on one case`,
     top.verdict.label,
-    top.unmatched_steps > 0 ? `${plural(top.unmatched_steps, 'step')} no rule covers` : null,
+    top.unmatched_steps != null && top.unmatched_steps > 0 ? `${plural(top.unmatched_steps, 'step')} no rule covers` : null,
     top.pending_approvals ? `${plural(top.pending_approvals, 'action')} waiting for a person` : null,
   ].filter(Boolean)
   const here = encodeURIComponent(top.case_id)

@@ -243,12 +243,12 @@ def _stored_rows():
 
 
 def test_a_form_case_wins_over_each_rows_own_case(client, analyst):
-    make_case("case-form")
-    make_case("case-row")
-    row = samples.generic(samples.ago(minutes=5), case_id="case-row")
-    sent = samples.send(client, samples.jsonl([row]), case_id="case-form")
+    make_case("logs-case-form")
+    make_case("logs-case-row")
+    row = samples.generic(samples.ago(minutes=5), case_id="logs-case-row")
+    sent = samples.send(client, samples.jsonl([row]), case_id="logs-case-form")
     assert sent.status_code == 200, sent.text
-    assert _stored_rows()[0][0] == "case-form"
+    assert _stored_rows()[0][0] == "logs-case-form"
 
 
 def test_a_credential_in_an_upload_is_reported_and_not_stored(client, analyst):
