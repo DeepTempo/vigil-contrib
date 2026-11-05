@@ -12,8 +12,11 @@ from core.log_events.ingest import (
     DROP_NOT_OBJECT,
     DROP_PAST_RETENTION,
     DROP_TOO_LARGE,
+    MAX_EMBEDDED_JSON_CHARS,
     NOTE_BAD_SCORE,
+    NOTE_JSON_TOO_LARGE,
     NOTE_REDACTED,
+    TOO_LARGE_TO_CHECK,
     Dropped,
     normalize,
     parse_time,
@@ -389,6 +392,128 @@ def test_a_credential_in_json_inside_a_string_is_gone_from_everything_stored(mes
     assert "[redacted]" in stored["raw"]["message"]
     assert "redacted" in stored["tags"]
     assert notes[NOTE_REDACTED] == 1
+
+
+PAST_THE_BOUND = "x" * (MAX_EMBEDDED_JSON_CHARS + 1)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        json.dumps({"client_secret": LEAKED, "pad": PAST_THE_BOUND}),
+        json.dumps({"pad": PAST_THE_BOUND, "client_secret": LEAKED}),
+        json.dumps([{"access_token": {"value": f"{LEAKED} more"}}, PAST_THE_BOUND]),
+        f'{{"x_api_key": "{LEAKED}"}}{PAST_THE_BOUND}',
+        f'{PAST_THE_BOUND} {{ "password": "{LEAKED}" }}',
+        f'{{\\"client_secret\\": \\"{LEAKED}\\"}}{PAST_THE_BOUND}',
+    ],
+    ids=["key first", "key last", "nested", "then padding", "after padding", "escaped"],
+)
+def test_json_past_the_parse_bound_is_replaced_and_says_it_could_not_be_checked(
+    message,
+):
+    notes = Counter()
+    stored = _stored({"message": message}, notes)
+    assert stored["raw"]["message"] == TOO_LARGE_TO_CHECK
+    assert LEAKED not in str(stored["raw"])
+    assert LEAKED not in stored["summary"]
+    assert LEAKED not in stored["search_text"]
+    assert "redacted" in stored["tags"]
+    assert notes[NOTE_JSON_TOO_LARGE] == 1
+    assert notes[NOTE_REDACTED] == 0
+
+
+def test_long_plain_text_past_the_bound_is_kept_and_its_credentials_still_go():
+    notes = Counter()
+    stored = _stored({"message": PAST_THE_BOUND}, notes)
+    assert stored["raw"]["message"] == PAST_THE_BOUND
+    assert notes == Counter()
+
+    stored = _stored(
+        {"message": f"[INFO] client_secret={LEAKED} {PAST_THE_BOUND}"}, notes
+    )
+    assert LEAKED not in str(stored["raw"])
+    assert "[INFO] client_secret=[redacted] xxx" in stored["raw"]["message"]
+    assert notes == Counter({NOTE_REDACTED: 1})
+
+
+def test_a_row_with_a_replaced_string_and_a_credential_counts_each_once():
+    notes = Counter()
+    stored = _stored(
+        {
+            "message": json.dumps({"token": LEAKED, "pad": PAST_THE_BOUND}),
+            "password": "hunter2val",
+        },
+        notes,
+    )
+    assert LEAKED not in str(stored["raw"])
+    assert "hunter2val" not in str(stored["raw"])
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1, NOTE_REDACTED: 1})
+
+
+CREDENTIAL_NAMES = [
+    "password",
+    "Passwd",
+    "db_pwd",
+    "secret",
+    "client_secret",
+    "clientSecret",
+    "client-secret",
+    "token",
+    "access_token",
+    "accessToken",
+    "api_key",
+    "apikey",
+    "x_api_key",
+    "x-api-key",
+    "apiKey",
+    "authorization",
+    "proxy_authorization",
+    "cookie",
+    "set_cookie",
+    "set-cookie",
+    "secret_access_key",
+    "secretAccessKey",
+    "private_key",
+    "privateKey",
+]
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_NAMES)
+@pytest.mark.parametrize(
+    "written",
+    [
+        "{name}={value}",
+        "{name}: {value}",
+        '{{"{name}": "{value}", "cut off',
+        "{{'{name}': '{value}'}}",
+        '\\"{name}\\":\\"{value}\\"',
+    ],
+    ids=["equals", "colon", "broken json", "single quotes", "escaped"],
+)
+def test_the_text_fallback_covers_every_name_structured_redaction_covers(name, written):
+    assert _stored({name: "hunter2val"})["raw"][name] == "[redacted]"
+    notes = Counter()
+    line = written.format(name=name, value=LEAKED)
+    stored = _stored({"message": line}, notes)
+    assert LEAKED not in str(stored["raw"]), line
+    assert LEAKED not in stored["search_text"], line
+    assert notes[NOTE_REDACTED] == 1, line
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"has_token": false, "user": "bob"}',
+        '{"session_cookie": null, "user": "bob"}',
+        '{"token_type": "bearer", "password_changed": "2026-01-01"}',
+        "the secret to this is patience",
+    ],
+)
+def test_what_structured_redaction_keeps_the_text_fallback_keeps(message):
+    notes = Counter()
+    assert _stored({"message": message}, notes)["raw"]["message"] == message
+    assert notes[NOTE_REDACTED] == 0
 
 
 def test_words_around_embedded_json_stay_and_it_stays_json():

@@ -49,14 +49,18 @@ DROP_FUTURE_TIME = "future_time"
 NOTE_BAD_SCORE = "bad_score"
 NOTE_UNKNOWN_CASE = "unknown_case"
 NOTE_REDACTED = "credentials_redacted"
+NOTE_JSON_TOO_LARGE = "json_too_large_to_check"
 
 REDACTED = "[redacted]"
+TOO_LARGE_TO_CHECK = "[JSON too large to check for credentials]"
 REDACTED_TAG = "redacted"
 MAX_EMBEDDED_JSON_CHARS = 200_000
 MAX_EMBEDDED_JSON_DEPTH = 4
 MAX_EMBEDDED_JSON_TRIES = 64
 _JSON = json.JSONDecoder()
 _JSON_OPENS = re.compile(r"[{\[]")
+# What a JSON object or a list of strings starts with, escaped or not.
+_LOOKS_LIKE_JSON = re.compile(r'[{\[]\s*\\*"')
 # A field is a credential when its name ends in one of these. "token_type" and
 # "password_changed" name something about a credential and keep their values.
 _CREDENTIAL_NAME = re.compile(
@@ -65,14 +69,20 @@ _CREDENTIAL_NAME = re.compile(
 )
 _BEARER = re.compile(r"\b(bearer)\s+[a-z0-9._~+/=-]+", re.I)
 # These headers run to the end of the line or its closing quote: "Cookie: a=1; b=2" holds two.
+# No \b before a name: as in _CREDENTIAL_NAME, it may end a longer one, such as client_secret.
+# A boolean or null says nothing secret, as in _redacted, which keeps them.
 _HEADER_IN_TEXT = re.compile(
-    r"\b(authorization|cookie)(\s*[=:]\s*)[^\r\n'\"]+",
+    r"(authorization|cookie)"
+    r"(\\*[\"']?\s*[=:]\s*\\*[\"']?)"
+    r"(?!\s*(?:true|false|null)\b)[^\r\n'\"]+",
     re.I,
 )
 _CREDENTIAL_IN_TEXT = re.compile(
-    r"\b(password|passwd|pwd|secret|token|api[_-]?key)"
-    r"(\"?\s*[=:]\s*)"
-    r"(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
+    r"(password|passwd|pwd|secret|token|api[_-]?key"
+    r"|secret[_-]?access[_-]?key|private[_-]?key)"
+    r"(\\*[\"']?\s*[=:]\s*)"
+    r"(?!(?:true|false|null)\b)"
+    r"(\\*\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
     re.I,
 )
 
@@ -669,7 +679,8 @@ def _names_a_credential(key: str) -> bool:
 
 def _redact_embedded_json(text: str, depth: int) -> str:
     """``text`` with each JSON object or array in it redacted as data. A value with nothing to
-    redact keeps its exact bytes. Past these bounds, ``_CREDENTIAL_IN_TEXT`` still reads it.
+    redact keeps its exact bytes. Past these bounds, ``_CREDENTIAL_IN_TEXT`` still reads it, and
+    ``_with_large_json_replaced`` has already taken any string too long to parse that holds JSON.
     """
     if depth >= MAX_EMBEDDED_JSON_DEPTH or len(text) > MAX_EMBEDDED_JSON_CHARS:
         return text
@@ -692,6 +703,20 @@ def _redact_embedded_json(text: str, depth: int) -> str:
             pieces += [text[copied:start], json.dumps(clean, ensure_ascii=False)]
             copied = end
     return "".join([*pieces, text[copied:]])
+
+
+def _with_large_json_replaced(value: Any) -> Any:
+    """``value`` with each string that looks like JSON, and is too long to parse, replaced."""
+    if isinstance(value, str):
+        too_large = len(value) > MAX_EMBEDDED_JSON_CHARS and _LOOKS_LIKE_JSON.search(
+            value
+        )
+        return TOO_LARGE_TO_CHECK if too_large else value
+    if isinstance(value, list):
+        return [_with_large_json_replaced(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _with_large_json_replaced(item) for key, item in value.items()}
+    return value
 
 
 def _masked(match: re.Match) -> str:
@@ -878,8 +903,11 @@ def normalize(
     if not isinstance(record, dict):
         raise Dropped(DROP_NOT_OBJECT)
     cleaned = _clean(record)
-    raw = _redacted(cleaned)
-    if raw != cleaned:
+    checkable = _with_large_json_replaced(cleaned)
+    if checkable != cleaned:
+        notes[NOTE_JSON_TOO_LARGE] += 1
+    raw = _redacted(checkable)
+    if raw != checkable:
         notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)
