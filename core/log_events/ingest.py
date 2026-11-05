@@ -912,9 +912,10 @@ def normalize(
     cleaned = _clean(record)
     checkable = _with_large_json_replaced(cleaned)
     raw = _redacted(checkable)
-    if checkable != cleaned or _gained(TOO_LARGE_TO_CHECK, checkable, raw):
+    unread = _gained(TOO_LARGE_TO_CHECK, checkable, raw)
+    if checkable != cleaned or unread:
         notes[NOTE_JSON_TOO_LARGE] += 1
-    if _gained(REDACTED, checkable, raw):
+    if _gained(REDACTED, checkable, raw) if unread else raw != checkable:
         notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)

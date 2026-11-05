@@ -660,3 +660,18 @@ def test_a_row_replaced_for_both_bounds_is_reported_once():
     }
     _stored(record, notes)
     assert notes == Counter({NOTE_JSON_TOO_LARGE: 1})
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"message": "Cookie: dummy [redacted]"},
+        {"password": "dummy [redacted]"},
+        {"message": '{"password":"dummy [redacted]"}'},
+        {"message": "Bearer dummy", "password": "[redacted] [redacted]"},
+    ],
+)
+def test_a_credential_already_holding_the_marker_text_is_still_reported(record):
+    notes = Counter()
+    _stored(record, notes)
+    assert notes == Counter({NOTE_REDACTED: 1})
