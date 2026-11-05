@@ -33,7 +33,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.database]
 
 BASE = "/api/kind-autonomy"
 BENIGN_REPLY = (
-    "SEVERITY: low\nCONFIDENCE: 0.4\nRECOMMENDED_ACTION: monitor\nREASONING: fine"
+    "SEVERITY: low\nCONFIDENCE: 0.4\nRECOMMENDED_ACTION: dismiss\nREASONING: fine"
 )
 
 
@@ -295,7 +295,7 @@ async def test_a_high_alert_a_model_calls_low_still_stays(client, admin):
 async def test_a_low_alert_triage_raises_to_high_stays(client, admin):
     _adopted(client)
     _turn_on(client)
-    reply = "SEVERITY: high\nRECOMMENDED_ACTION: monitor"
+    reply = "SEVERITY: high\nRECOMMENDED_ACTION: dismiss"
     await _through_daemon(_incoming(), reply)
     assert _stored("new") == (None, None, None)
 
@@ -522,7 +522,7 @@ def test_only_what_the_policy_closed_can_be_overturned(client, admin):
         "by-hand",
         noise_at=NOW,
         noise_by="ka-closer",
-        noise_kind="analyst",
+        noise_kind="person",
     )
     add_finding(
         "other-policy",
@@ -632,3 +632,69 @@ def test_events_and_closed_for_an_unknown_kind_are_empty(client, admin):
     assert client.get(f"{BASE}/nope/closed").json() == {"total": 0, "alerts": []}
     assert client.post(f"{BASE}/nope/adopt").status_code == 404
     assert client.post(f"{BASE}/nope/revoke").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "SEVERITY: low\nCONFIDENCE: 0.4\nRECOMMENDED_ACTION: monitor\nREASONING: fine",
+        "SEVERITY: low\nCONFIDENCE: 0.4\nREASONING: no action named",
+        "SEVERITY: low",
+    ],
+)
+async def test_only_an_explicit_dismiss_closes_and_the_rest_are_evaluated(
+    client, admin, reply
+):
+    _adopted(client)
+    _turn_on(client)
+    offer = await _through_daemon(_incoming("stays"), reply)
+    assert _stored("stays") == (None, None, None)
+    offer.assert_awaited_once()
+
+
+async def test_a_dismiss_closes_and_skips_response_evaluation(client, admin):
+    _adopted(client)
+    _turn_on(client)
+    offer = await _through_daemon(_incoming("goes"))
+    assert _stored("goes")[1] == "agent"
+    offer.assert_not_awaited()
+
+
+def _mark_through_the_route(client):
+    add_finding("marked")
+    response = client.post("/api/findings/marked/noise", json={"reason": "seen it"})
+    assert response.status_code == 200, response.text
+    return response.json()["noise_marked_by_kind"]
+
+
+def test_an_agent_token_noise_mark_is_stored_as_an_agent_and_earns_nothing(
+    client, admin
+):
+    assert _mark_through_the_route(client) == "agent"
+    assert _stored("marked")[1] == "agent"
+    assert row_of(client)["track_record"]["agreed"] == 0
+
+
+def test_a_console_person_noise_mark_is_stored_as_a_person_and_counts(client, admin):
+    from core.cases.agent_closure import note_http_actor
+    from services.api.middleware.auth import get_current_user
+
+    async def signed_in():
+        note_http_actor(
+            username=admin.username,
+            principal_id=admin.principal_id,
+            via="cookie",
+            person=True,
+        )
+        return admin
+
+    client.app.dependency_overrides[get_current_user] = signed_in
+    assert _mark_through_the_route(client) == "person"
+    assert row_of(client)["track_record"]["agreed"] == 1
+
+
+def test_a_legacy_analyst_mark_cannot_show_a_person_made_it_so_it_earns_nothing(
+    client, admin
+):
+    earn(5, kind="analyst")
+    assert row_of(client)["track_record"]["agreed"] == 0

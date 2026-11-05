@@ -17,7 +17,8 @@ from pydantic import BaseModel
 from core.audit import trail
 from core.auth.permissions import permission_gate
 from core.cases import case_trail
-from core.cases.closure import ClosedByKind
+from core.cases.agent_closure import close_channel
+from core.cases.closure import noise_mark_kind
 from core.findings.enrichment import (
     FindingNotFound,
     NoProviderConfigured,
@@ -227,7 +228,7 @@ def mark_finding_noise(
     reason = ((body.reason if body else None) or "").strip()
     finding.noise_marked_at = utcnow()
     finding.noise_marked_by = current_user.user_id
-    finding.noise_marked_by_kind = ClosedByKind.ANALYST.value
+    finding.noise_marked_by_kind = noise_mark_kind(close_channel())
     finding.noise_reason = reason or None
     case_trail.append_or_legacy(
         session,

@@ -39,12 +39,14 @@ class ClosedByKind(str, Enum):
 
     A closure does not store this word. It stores how the caller authenticated,
     and Trust is derived from that: ``analyst`` only for a person on the
-    console cookie. Noise marking still writes the word itself; that path has
-    no session to derive from.
+    console cookie. A noise mark stores ``person`` on that same cookie and
+    ``agent`` otherwise. An older mark says ``analyst`` whoever made it, so it
+    proves nothing about a person.
     """
 
     ANALYST = "analyst"
     AGENT = "agent"
+    PERSON = "person"
 
 
 # What each closure category concluded: the one mapping episodic memory writes
@@ -74,6 +76,13 @@ def trust_word(channel: str | None) -> str:
     return ClosedByKind.AGENT.value
 
 
+def noise_mark_kind(channel: str | None) -> str:
+    """What a noise mark stores: ``person`` only for the console cookie."""
+    if channel in PERSON_CHANNELS:
+        return ClosedByKind.PERSON.value
+    return ClosedByKind.AGENT.value
+
+
 def closed_by_person(channel: str | None) -> bool:
     """A person closed it; no closure row (``None``) counts as an agent close."""
     return trust_word(channel) == ClosedByKind.ANALYST.value
@@ -87,5 +96,6 @@ __all__: Sequence[str] = (
     "ClosureCategory",
     "PERSON_CHANNELS",
     "closed_by_person",
+    "noise_mark_kind",
     "trust_word",
 )

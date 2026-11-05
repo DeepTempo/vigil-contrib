@@ -136,9 +136,9 @@ def test_an_agents_real_closure_does_not_count_either():
 def test_a_noise_mark_counts_only_from_a_person():
     at = NOW - timedelta(days=1)
     alerts = [
-        _alert("person", mark=NoiseMark(at, "person-1", "analyst", None)),
+        _alert("person", mark=NoiseMark(at, "person-1", "person", None)),
         _alert("agent", mark=NoiseMark(at, "run-1", "agent", "tool")),
-        _alert("svc", mark=NoiseMark(at, "svc-1", "analyst", None)),
+        _alert("svc", mark=NoiseMark(at, "svc-1", "person", None)),
     ]
     record = _records(alerts, service_accounts=frozenset({"svc-1"}))[KIND]
     assert record.benign_here == 1
@@ -146,7 +146,7 @@ def test_a_noise_mark_counts_only_from_a_person():
 
 def test_a_noise_mark_on_a_closed_case_is_not_a_second_label():
     at = NOW - timedelta(days=2)
-    alert = _alert("a", mark=NoiseMark(at, "person-1", "analyst", None))
+    alert = _alert("a", mark=NoiseMark(at, "person-1", "person", None))
     record = _records([alert], [_closure("c", ids=["a"])])[KIND]
     assert record.clean_labels == 1
 
@@ -262,7 +262,7 @@ def test_the_window_outlives_a_policy_so_a_renewal_at_expiry_can_pass():
 
 TRIAGED = {
     "severity": "low",
-    "recommended_action": "monitor",
+    "recommended_action": "dismiss",
     "ai_triage": {"result": {"severity": "low"}},
 }
 
@@ -273,7 +273,9 @@ TRIAGED = {
         ({}, "low", None),
         ({"severity": "medium"}, "medium", None),
         ({"recommended_action": "dismiss"}, "low", None),
-        ({"recommended_action": None}, "low", None),
+        ({"recommended_action": None}, "low", "triage_did_not_dismiss"),
+        ({"recommended_action": ""}, "low", "triage_did_not_dismiss"),
+        ({"recommended_action": "monitor"}, "low", "triage_did_not_dismiss"),
         ({"ai_triage": None}, "low", "triage_failed"),
         ({"ai_triage_error": "boom"}, "low", "triage_failed"),
         ({"severity": "high"}, "low", "severity_out_of_scope"),
@@ -283,9 +285,9 @@ TRIAGED = {
         ({}, "high", "severity_out_of_scope"),
         ({}, "critical", "severity_out_of_scope"),
         ({}, None, "severity_out_of_scope"),
-        ({"recommended_action": "isolate"}, "low", "triage_wants_action"),
-        ({"recommended_action": "block"}, "low", "triage_wants_action"),
-        ({"recommended_action": "investigate"}, "low", "triage_wants_action"),
+        ({"recommended_action": "isolate"}, "low", "triage_did_not_dismiss"),
+        ({"recommended_action": "block"}, "low", "triage_did_not_dismiss"),
+        ({"recommended_action": "investigate"}, "low", "triage_did_not_dismiss"),
         (
             {"enrichment": {"threat_indicators": {"ip": 1}}},
             "low",

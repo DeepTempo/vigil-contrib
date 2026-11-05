@@ -227,7 +227,15 @@ def closed_case(
         )
 
 
-def earn(count=59, *, prefix="clean", source=SOURCE, title=TITLE, severity="low"):
+def earn(
+    count=59,
+    *,
+    prefix="clean",
+    source=SOURCE,
+    title=TITLE,
+    severity="low",
+    kind="person",
+):
     """People marking this kind noise one at a time, hours apart, so no burst drops them."""
     for i in range(count):
         at = NOW - timedelta(hours=2 * (i + 2))
@@ -239,7 +247,7 @@ def earn(count=59, *, prefix="clean", source=SOURCE, title=TITLE, severity="low"
             at=at,
             noise_at=at,
             noise_by="ka-closer",
-            noise_kind="analyst",
+            noise_kind=kind,
         )
 
 

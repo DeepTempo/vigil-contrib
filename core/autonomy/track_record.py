@@ -47,8 +47,8 @@ DAILY_DAYS = 14
 # The only severities a policy may close. Anything else, unknown included, stays with a person.
 AUTO_SEVERITIES = frozenset({"low", "medium"})
 ABOVE_SCOPE = frozenset({"high", "critical"})
-# Triage asked for something other than leaving the alert alone.
-CLOSABLE_ACTIONS = frozenset({"monitor", "dismiss"})
+# The only triage answer a policy may act on. "monitor" asks someone to keep watching it.
+DISMISS = "dismiss"
 
 POLICY_REASON_PREFIX = "kind-policy:"
 
@@ -178,7 +178,7 @@ def is_vigil_close(mark: Optional[NoiseMark]) -> bool:
 def _person_mark(mark: Optional[NoiseMark], service_accounts: FrozenSet[str]) -> bool:
     return bool(
         mark
-        and mark.by_kind == ClosedByKind.ANALYST.value
+        and mark.by_kind == ClosedByKind.PERSON.value
         and mark.by not in service_accounts
     )
 
@@ -444,9 +444,8 @@ def _severity_out_of_scope(f: Mapping[str, Any], source: Any) -> bool:
     )
 
 
-def _triage_wants_action(f: Mapping[str, Any], _source: Any) -> bool:
-    action = _text(f.get("recommended_action"))
-    return bool(action) and action not in CLOSABLE_ACTIONS
+def _triage_did_not_dismiss(f: Mapping[str, Any], _source: Any) -> bool:
+    return _text(f.get("recommended_action")) != DISMISS
 
 
 def _threat_intel_hit(f: Mapping[str, Any], _source: Any) -> bool:
@@ -463,7 +462,7 @@ def _precedent_escalates(f: Mapping[str, Any], _source: Any) -> bool:
 STAY_RULES: Tuple[Tuple[str, Callable[[Mapping[str, Any], Any], bool]], ...] = (
     ("triage_failed", _triage_failed),
     ("severity_out_of_scope", _severity_out_of_scope),
-    ("triage_wants_action", _triage_wants_action),
+    ("triage_did_not_dismiss", _triage_did_not_dismiss),
     ("threat_intel_hit", _threat_intel_hit),
     ("precedent_escalates", _precedent_escalates),
 )
