@@ -10062,6 +10062,11 @@ export interface components {
             finding_ids: string[];
             /** Kind */
             kind: string;
+            /**
+             * Named By
+             * @default 0
+             */
+            named_by: number;
             /** Value */
             value: string;
         };
@@ -10533,7 +10538,7 @@ export interface components {
             /** Title */
             title: string;
             /** Unmatched Steps */
-            unmatched_steps: number;
+            unmatched_steps?: number | null;
             verdict: components["schemas"]["Verdict"];
         };
         /**
@@ -12366,6 +12371,11 @@ export interface components {
             case_id: string;
             /** Entities */
             entities: components["schemas"]["Entity"][];
+            /**
+             * Entities Total
+             * @default 0
+             */
+            entities_total: number;
             /** Intel */
             intel: components["schemas"]["IntelItem"][];
             /** Log Events */
@@ -12385,12 +12395,24 @@ export interface components {
             status: string;
             /** Steps */
             steps: components["schemas"]["Step"][];
+            /**
+             * Steps Offset
+             * @default 0
+             */
+            steps_offset: number;
+            /** Steps Total */
+            steps_total: number;
             /** Summary */
             summary: string;
             /** Title */
             title: string;
             /** Unmatched Steps */
             unmatched_steps: components["schemas"]["Step"][];
+            /**
+             * Unmatched Total
+             * @default 0
+             */
+            unmatched_total: number;
             verdict: components["schemas"]["Verdict"];
             viewer?: components["schemas"]["Viewer"];
         };
@@ -21148,7 +21170,10 @@ export interface operations {
     };
     get_api_incidents_case_id: {
         parameters: {
-            query?: never;
+            query?: {
+                steps_offset?: number;
+                steps_limit?: number;
+            };
             header?: {
                 authorization?: string | null;
             };
