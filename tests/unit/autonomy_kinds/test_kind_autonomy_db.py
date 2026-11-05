@@ -767,21 +767,36 @@ async def test_masking_cannot_hand_one_detection_anothers_policy(client, admin):
 
 
 def test_a_request_cannot_claim_a_source_rule():
-    from core.storage.source_rule import source_rule_of
-
     plain = Finding(
         finding_id="x",
         data_source="s",
         entity_context={"source_rule": "claimed", "hostnames": ["a"]},
     )
     assert plain.entity_context == {"hostnames": ["a"]}
-    assert source_rule_of(plain.entity_context) is None
+    assert plain.source_rule is None
+    plain.source_rule = "claimed"
+    assert plain.source_rule is None
+
+
+def test_a_later_plain_write_keeps_the_rule_an_adapter_gave():
+    from core.storage.source_rule import with_source_rule
+
+    row = Finding(
+        finding_id="x",
+        data_source="s",
+        entity_context=with_source_rule({"hostnames": ["a"]}, "real"),
+    )
+    assert row.entity_context == {"hostnames": ["a"]}
+    assert row.source_rule == "real"
+    row.source_rule = "claimed"
+    row.entity_context = {"source_rule": "claimed", "hostnames": ["b"]}
+    assert row.source_rule == "real"
+    assert row.entity_context == {"hostnames": ["b"]}
 
 
 def test_a_webhook_row_loses_its_claimed_rule_and_an_adapter_row_keeps_its_own(db):
     from core.ingestion.ingestion_service import IngestionService
     from core.integrations.splunk.adapter import _splunk_event_to_finding
-    from core.storage.source_rule import source_rule_of
 
     service = IngestionService()
     claimed = {
@@ -799,9 +814,40 @@ def test_a_webhook_row_loses_its_claimed_rule_and_an_adapter_row_keeps_its_own(d
     )
     assert service.ingest_finding(adapter)
     with unit_of_work() as session:
-        assert source_rule_of(session.get(Finding, "webhook-1").entity_context) is None
-        stored = session.get(Finding, adapter["finding_id"]).entity_context
-    assert source_rule_of(stored) == "Failed logins"
+        assert session.get(Finding, "webhook-1").source_rule is None
+        stored = session.get(Finding, adapter["finding_id"])
+        assert stored.source_rule == "Failed logins"
+        assert "source_rule" not in (stored.entity_context or {})
+
+
+def _forge_stored_rule(rule=RULE):
+    """What a row holds when something wrote the key without passing through the model."""
+    _sql(
+        "UPDATE findings SET entity_context = coalesce(entity_context, '{}') || "
+        "jsonb_build_object('source_rule', cast(:rule as text)) RETURNING finding_id",
+        rule=rule,
+    )
+
+
+def test_a_rule_key_already_stored_on_a_row_earns_no_adoption(client, admin):
+    earn(rule=None)
+    _forge_stored_rule()
+    row = row_of(client)
+    assert row["rule_id"] is None
+    assert row["eligible"] is False
+    assert [r["rule"] for r in row["why_not"]] == ["one_source_rule"]
+    refused = _adopt(client)
+    assert refused.status_code == 409
+    assert "Known only by its title" in refused.json()["detail"]
+
+
+async def test_a_rule_key_already_stored_on_a_row_earns_no_close(client, admin):
+    _adopted(client)
+    _turn_on(client)
+    finding = _incoming("forged", rule=None)
+    _forge_stored_rule()
+    await _through_daemon(finding)
+    assert _stored("forged")[0] is None
 
 
 async def test_a_true_positive_ticket_stops_the_next_close_at_once(client, admin):
@@ -873,10 +919,10 @@ def _many_findings(count, title=TITLE):
         session.execute(
             text(
                 "INSERT INTO findings (finding_id, title, data_source, severity, timestamp, "
-                "entity_context) SELECT 'bulk-' || g, :title, :source, 'low', "
-                "now() - interval '1 hour', "
+                "source_rule, entity_context) SELECT 'bulk-' || g, :title, :source, 'low', "
+                "now() - interval '1 hour', :rule, "
                 "jsonb_build_object('src_ips', jsonb_build_array('10.0.' || (g / 250) || '.' "
-                "|| (g % 250)), 'source_rule', cast(:rule as text)) "
+                "|| (g % 250))) "
                 "FROM generate_series(1, :count) g"
             ),
             {"title": title, "source": SOURCE, "rule": RULE, "count": count},

@@ -1,3 +1,7 @@
+-- The rule a connector read from the source's own rule field. A kind is adopted by this column,
+-- so a value only reaches it through core/storage/source_rule.py, never from an alert's content.
+ALTER TABLE public.findings ADD COLUMN IF NOT EXISTS source_rule character varying(255);
+
 -- What Vigil may do on its own for one kind of alert, keyed by the cold start signature.
 -- A kind with no row asks. The transitions are TRANSITIONS in
 -- core/storage/models/kind_policy.py.

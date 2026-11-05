@@ -139,7 +139,13 @@ class CrowdStrikeAdapter:
 
 
 def crowdstrike_rule_id(detection: Dict[str, Any]) -> Optional[str]:
-    """The one detection pattern this fired on, else its scenario. Vendor fields, not text."""
+    """Its scenario, else the one detection pattern this fired on. Vendor fields, not text.
+
+    A scenario comes first so one scenario keeps one id however many patterns a detection holds.
+    """
+    scenario = detection.get("scenario")
+    if scenario:
+        return f"scenario:{scenario}"
     patterns = {
         str(pattern)
         for pattern in (
@@ -148,10 +154,7 @@ def crowdstrike_rule_id(detection: Dict[str, Any]) -> Optional[str]:
         )
         if pattern not in (None, "")
     }
-    if len(patterns) == 1:
-        return f"pattern:{next(iter(patterns))}"
-    scenario = detection.get("scenario")
-    return f"scenario:{scenario}" if scenario else None
+    return f"pattern:{next(iter(patterns))}" if len(patterns) == 1 else None
 
 
 def _detection_to_finding(detection: Dict[str, Any]) -> Optional[Dict[str, Any]]:

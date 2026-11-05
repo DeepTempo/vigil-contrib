@@ -51,11 +51,25 @@ def _crowdstrike(**detection):
     [
         (
             _elastic(
+                {
+                    "kibana.alert.rule.rule_id": "rule-1",
+                    "kibana.alert.rule.uuid": "uuid-1",
+                    "kibana.alert.rule.name": "N",
+                }
+            ),
+            "rule-1",
+        ),
+        (
+            _elastic({"signal": {"rule": {"rule_id": "rule-1", "id": "uuid-1"}}}),
+            "rule-1",
+        ),
+        (_elastic({"signal": {"rule": {"id": "sig-1", "name": "N"}}}), "sig-1"),
+        (
+            _elastic(
                 {"kibana.alert.rule.uuid": "uuid-1", "kibana.alert.rule.name": "N"}
             ),
             "uuid-1",
         ),
-        (_elastic({"signal": {"rule": {"id": "sig-1", "name": "N"}}}), "sig-1"),
         (_elastic({"rule": {"level": 3, "id": "5710", "description": "Sshd"}}), "5710"),
         (
             _splunk_event_to_finding({"_cd": "1", "search_name": "Failed logins"}),
@@ -73,6 +87,9 @@ def _crowdstrike(**detection):
             ),
             "scenario:x",
         ),
+        (_crowdstrike(pattern_id=10, scenario="x"), "scenario:x"),
+        (_crowdstrike(behaviors=[{"pattern_id": 10}], scenario="x"), "scenario:x"),
+        (_crowdstrike(pattern_id=10), "pattern:10"),
         (_sentinel({"title": "T", "analytic_rule_ids": ["rule-a"]}), "rule-a"),
         (_defender({"title": "T", "detectorId": "det-1"}), "det-1"),
         (_hub({"Title": "T", "GeneratorId": "aws/iam.1"}), "aws/iam.1"),

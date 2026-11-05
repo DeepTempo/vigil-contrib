@@ -27,7 +27,7 @@ from sqlalchemy.orm import (
 
 from core.storage.ip_address import canonical_entity_context
 from core.storage.models.base import Base, case_findings
-from core.storage.source_rule import trusted_rule_only
+from core.storage.source_rule import SourceRule, split_source_rule
 from core.time import utcnow
 
 if TYPE_CHECKING:
@@ -52,6 +52,9 @@ class Finding(Base):
 
     # Entity context (optional fields)
     entity_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # The rule an adapter read from the source's own rule field; see core/storage/source_rule.py.
+    source_rule: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Each address under FINDING_IP_KEYS, filled by Postgres (revision 0019);
     # the IP-exclusion filter reads it.
@@ -109,8 +112,15 @@ class Finding(Base):
     )
 
     @validates("entity_context")
-    def _canonical_ips(self, _key, entity_context):
-        return canonical_entity_context(trusted_rule_only(entity_context))
+    def _canonical_context(self, _key, entity_context):
+        rule, rest = split_source_rule(entity_context)
+        if rule is not None:
+            self.source_rule = rule
+        return canonical_entity_context(rest)
+
+    @validates("source_rule")
+    def _only_an_adapters_rule(self, _key, rule):
+        return str(rule) if isinstance(rule, SourceRule) else self.source_rule
 
     # Indexes
     __table_args__ = (

@@ -1,13 +1,14 @@
 """Which rule in the source raised a finding, kept apart from the title an alert can write.
 
-Only an adapter reading the source's own rule field builds a ``SourceRule``. Anything parsed from
-a request, webhook, upload or stored row is a plain string, and the Finding model drops a plain
-string on its way in, so no route can claim a rule by sending this key.
+Only an adapter reading the source's own rule field builds a ``SourceRule``, and only a
+``SourceRule`` reaches the ``findings.source_rule`` column. The rule is read from that column
+alone. A string under this key in ``entity_context``, whether it came from a request, an upload
+or a row an older version stored, is never read as a rule.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 ENTITY_CONTEXT_KEY = "source_rule"
 MAX_RULE_CHARS = 255
@@ -40,22 +41,10 @@ def with_source_rule(entity_context: Any, identifier: Any) -> Any:
     return {**(entity_context or {}), ENTITY_CONTEXT_KEY: SourceRule(value)}
 
 
-def trusted_rule_only(entity_context: Any) -> Any:
-    if not isinstance(entity_context, dict) or isinstance(
-        entity_context.get(ENTITY_CONTEXT_KEY, SourceRule()), SourceRule
-    ):
-        return entity_context
-    return {k: v for k, v in entity_context.items() if k != ENTITY_CONTEXT_KEY}
-
-
-def source_rule_of(entity_context: Any) -> Optional[str]:
-    """The rule on a stored finding. The model only lets a real one in."""
-    if not isinstance(entity_context, dict):
-        return None
-    value = entity_context.get(ENTITY_CONTEXT_KEY)
-    return value if isinstance(value, str) and value else None
-
-
-def source_rule_column(column: Any) -> Any:
-    """The same read in SQL, for a JSONB ``entity_context`` column."""
-    return column[ENTITY_CONTEXT_KEY].astext
+def split_source_rule(entity_context: Any) -> Tuple[Optional[SourceRule], Any]:
+    """The adapter's rule on ``entity_context``, and the context without the key."""
+    if not isinstance(entity_context, dict) or ENTITY_CONTEXT_KEY not in entity_context:
+        return None, entity_context
+    rest = {k: v for k, v in entity_context.items() if k != ENTITY_CONTEXT_KEY}
+    rule = entity_context[ENTITY_CONTEXT_KEY]
+    return (rule if isinstance(rule, SourceRule) else None), rest

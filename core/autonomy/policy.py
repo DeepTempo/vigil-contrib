@@ -76,7 +76,6 @@ from core.storage.models import (
 )
 from core.storage.models.base import case_findings
 from core.storage.models.cold_start import RunStatus
-from core.storage.source_rule import source_rule_column, source_rule_of
 from core.storage.unit_of_work import unit_of_work
 
 logger = logging.getLogger(__name__)
@@ -168,13 +167,12 @@ def _in_view() -> Tuple[Any, ...]:
 
 def _alert_tallies(session: Session, since: datetime) -> Tuple[List[AlertTally], bool]:
     """The window's alerts counted in the database, with whether the read stopped early."""
-    rule = source_rule_column(Finding.entity_context).label("rule")
     rows = session.execute(
         select(
             Finding.data_source,
             Finding.title,
             _ENTITIES_IN_TITLE,
-            rule,
+            Finding.source_rule.label("rule"),
             func.count().label("seen"),
             func.count()
             .filter(func.lower(Finding.severity).in_(sorted(ABOVE_SCOPE)))
@@ -968,7 +966,7 @@ def close_if_adopted(
         if (
             row.noise_marked_at is not None
             or not adoption.rule_id
-            or source_rule_of(row.entity_context) != adoption.rule_id
+            or row.source_rule != adoption.rule_id
             or str(row.severity or "").lower() not in AUTO_SEVERITIES
             or _on_a_case(session, finding_id)
         ):

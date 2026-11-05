@@ -2987,6 +2987,11 @@
   "nullable": true,
   "type": "character varying(20)"
  },
+ "column findings.source_rule": {
+  "default": null,
+  "nullable": true,
+  "type": "character varying(255)"
+ },
  "column findings.timestamp": {
   "default": null,
   "nullable": true,

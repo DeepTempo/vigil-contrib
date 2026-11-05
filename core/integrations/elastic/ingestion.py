@@ -315,10 +315,13 @@ class ElasticIngestion(SIEMIngestionService):
                 "severity": severity,
                 "title": title,
                 "description": description[:500] if description else "",
+                # rule_id names the rule in both document shapes. A uuid is per saved copy.
                 "entity_context": with_source_rule(
                     entity_context,
-                    source.get("kibana.alert.rule.uuid")
+                    source.get("kibana.alert.rule.rule_id")
+                    or rule.get("rule_id")
                     or rule.get("id")
+                    or source.get("kibana.alert.rule.uuid")
                     or (source.get("rule") or {}).get("id"),
                 ),
                 "raw_data": alert,
