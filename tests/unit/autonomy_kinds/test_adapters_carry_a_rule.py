@@ -10,6 +10,7 @@ from core.integrations.microsoft_defender.ingestion import MicrosoftDefenderInge
 from core.integrations.opensearch.ingestion import OpenSearchIngestion
 from core.integrations.splunk.adapter import _splunk_event_to_finding
 from core.storage.source_rule import SourceRule
+from services.daemon.poller import DataPoller
 
 pytestmark = pytest.mark.unit
 
@@ -76,19 +77,12 @@ def _crowdstrike(**detection):
             "Failed logins",
         ),
         (_splunk_event_to_finding({"_cd": "1", "rule_name": "ES rule"}), "ES rule"),
-        (_crowdstrike(scenario="credential_theft"), "scenario:credential_theft"),
         (
             _crowdstrike(behaviors=[{"pattern_id": 10}, {"pattern_id": 10}]),
             "pattern:10",
         ),
-        (
-            _crowdstrike(
-                behaviors=[{"pattern_id": 10}, {"pattern_id": 11}], scenario="x"
-            ),
-            "scenario:x",
-        ),
-        (_crowdstrike(pattern_id=10, scenario="x"), "scenario:x"),
-        (_crowdstrike(behaviors=[{"pattern_id": 10}], scenario="x"), "scenario:x"),
+        (_crowdstrike(pattern_id=10, scenario="x"), "pattern:10"),
+        (_crowdstrike(behaviors=[{"pattern_id": 10}], scenario="x"), "pattern:10"),
         (_crowdstrike(pattern_id=10), "pattern:10"),
         (_sentinel({"title": "T", "analytic_rule_ids": ["rule-a"]}), "rule-a"),
         (_defender({"title": "T", "detectorId": "det-1"}), "det-1"),
@@ -109,6 +103,9 @@ def test_a_real_rule_field_is_carried_as_trusted(finding, rule):
         _splunk_event_to_finding({"_cd": "1"}),
         _crowdstrike(),
         _crowdstrike(behaviors=[{"pattern_id": 10}, {"pattern_id": 11}]),
+        _crowdstrike(scenario="credential_theft"),
+        _crowdstrike(behaviors=[{"pattern_id": 10}, {"pattern_id": 11}], scenario="x"),
+        _crowdstrike(behaviors=[{}], scenario="x"),
         _sentinel({"title": "T"}),
         _sentinel({"title": "T", "analytic_rule_ids": ["a", "b"]}),
         _defender({"title": "T"}),
@@ -119,3 +116,23 @@ def test_a_real_rule_field_is_carried_as_trusted(finding, rule):
 )
 def test_a_source_that_names_no_single_rule_carries_none(finding):
     assert "source_rule" not in (finding["entity_context"] or {})
+
+
+@pytest.mark.parametrize(
+    "detection, rule",
+    [
+        ({"scenario": "x"}, None),
+        ({"scenario": "x", "behaviors": [{"pattern_id": 10}]}, "pattern:10"),
+        (
+            {"scenario": "x", "behaviors": [{"pattern_id": 10}, {"pattern_id": 11}]},
+            None,
+        ),
+        ({}, None),
+    ],
+)
+def test_the_poller_and_the_adapter_name_the_same_crowdstrike_rule(detection, rule):
+    detection = {"detection_id": "c1", **detection}
+    polled = DataPoller.__new__(DataPoller)._crowdstrike_detection_to_finding(detection)
+    fetched = _detection_to_finding(detection)
+    assert polled["entity_context"].get("source_rule") == rule
+    assert fetched["entity_context"].get("source_rule") == rule

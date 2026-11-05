@@ -139,13 +139,11 @@ class CrowdStrikeAdapter:
 
 
 def crowdstrike_rule_id(detection: Dict[str, Any]) -> Optional[str]:
-    """Its scenario, else the one detection pattern this fired on. Vendor fields, not text.
+    """The one detection pattern this fired on, else None. A vendor field, not text.
 
-    A scenario comes first so one scenario keeps one id however many patterns a detection holds.
+    A scenario is no rule: different patterns share one, and an id must not merge them. A kind
+    with no single pattern fails closed, so some CrowdStrike kinds never earn autonomy.
     """
-    scenario = detection.get("scenario")
-    if scenario:
-        return f"scenario:{scenario}"
     patterns = {
         str(pattern)
         for pattern in (

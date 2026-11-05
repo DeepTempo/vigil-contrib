@@ -28,6 +28,7 @@ from core.autonomy.track_record import (
     stay_reason,
     why_not,
 )
+from core.integrations.crowdstrike.adapter import crowdstrike_rule_id
 
 pytestmark = pytest.mark.unit
 
@@ -347,6 +348,29 @@ def test_a_kind_is_only_eligible_as_one_source_rule(tallies, says):
     reasons = why_not(records[KIND])
     assert [r["rule"] for r in reasons] == ["one_source_rule"]
     assert says in reasons[0]["why"]
+
+
+def test_a_crowdstrike_kind_mixing_a_pattern_with_rows_of_no_rule_is_not_eligible():
+    same_scenario = [
+        {"scenario": "x", "behaviors": [{"pattern_id": 10}]},
+        {"scenario": "x", "behaviors": [{"pattern_id": 10}]},
+        {"scenario": "x", "behaviors": [{"pattern_id": 10}, {"pattern_id": 11}]},
+        {"scenario": "x"},
+    ]
+    tallies = [_tally(crowdstrike_rule_id(d)) for d in same_scenario]
+    records = build_records(tallies, (), _spaced(59), (), (), NOW)
+    assert records[KIND].rule_id is None
+    reasons = why_not(records[KIND])
+    assert [r["rule"] for r in reasons] == ["one_source_rule"]
+    assert "2 alerts with this title name no source rule" in reasons[0]["why"]
+
+
+def test_a_crowdstrike_scenario_alone_earns_nothing():
+    tallies = [_tally(crowdstrike_rule_id({"scenario": "x"}), 9)]
+    records = build_records(tallies, (), _spaced(59), (), (), NOW)
+    reasons = why_not(records[KIND])
+    assert [r["rule"] for r in reasons] == ["one_source_rule"]
+    assert "Known only by its title" in reasons[0]["why"]
 
 
 def test_one_source_rule_with_the_evidence_is_eligible():
