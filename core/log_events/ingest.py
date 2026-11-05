@@ -52,6 +52,11 @@ NOTE_REDACTED = "credentials_redacted"
 
 REDACTED = "[redacted]"
 REDACTED_TAG = "redacted"
+MAX_EMBEDDED_JSON_CHARS = 200_000
+MAX_EMBEDDED_JSON_DEPTH = 4
+MAX_EMBEDDED_JSON_TRIES = 64
+_JSON = json.JSONDecoder()
+_JSON_OPENS = re.compile(r"[{\[]")
 # A field is a credential when its name ends in one of these. "token_type" and
 # "password_changed" name something about a credential and keep their values.
 _CREDENTIAL_NAME = re.compile(
@@ -66,7 +71,7 @@ _HEADER_IN_TEXT = re.compile(
 )
 _CREDENTIAL_IN_TEXT = re.compile(
     r"\b(password|passwd|pwd|secret|token|api[_-]?key)"
-    r"(\s*[=:]\s*)"
+    r"(\"?\s*[=:]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
     re.I,
 )
@@ -662,25 +667,61 @@ def _names_a_credential(key: str) -> bool:
     return _CREDENTIAL_NAME.search(words) is not None
 
 
-def _redact_text(text: str) -> str:
+def _redact_embedded_json(text: str, depth: int) -> str:
+    """``text`` with each JSON object or array in it redacted as data. A value with nothing to
+    redact keeps its exact bytes. Past these bounds, ``_CREDENTIAL_IN_TEXT`` still reads it.
+    """
+    if depth >= MAX_EMBEDDED_JSON_DEPTH or len(text) > MAX_EMBEDDED_JSON_CHARS:
+        return text
+    pieces: List[str] = []
+    copied = 0
+    at = 0
+    for _ in range(MAX_EMBEDDED_JSON_TRIES):
+        found = _JSON_OPENS.search(text, at)
+        if found is None:
+            break
+        start = found.start()
+        try:
+            value, end = _JSON.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            at = start + 1
+            continue
+        at = end
+        clean = _redacted(value, depth + 1)
+        if clean != value:
+            pieces += [text[copied:start], json.dumps(clean, ensure_ascii=False)]
+            copied = end
+    return "".join([*pieces, text[copied:]])
+
+
+def _masked(match: re.Match) -> str:
+    """Keeps a value's quotes, so redacted JSON stays JSON and redacting twice changes nothing."""
+    value = match.group(3)
+    quote = value[0] if value[0] in "\"'" else ""
+    return f"{match.group(1)}{match.group(2)}{quote}{REDACTED}{quote}"
+
+
+def _redact_text(text: str, depth: int = 0) -> str:
+    text = _redact_embedded_json(text, depth)
     text = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
-    for pattern in (_HEADER_IN_TEXT, _CREDENTIAL_IN_TEXT):
-        text = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
-    return text
+    text = _HEADER_IN_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
+    return _CREDENTIAL_IN_TEXT.sub(_masked, text)
 
 
-def _redacted(value: Any) -> Any:
+def _redacted(value: Any, depth: int = 0) -> Any:
     """``value`` with every credential in it replaced, field by field and inside text."""
     if isinstance(value, str):
-        return _redact_text(value)
+        return _redact_text(value, depth)
     if isinstance(value, list):
-        return [_redacted(item) for item in value]
+        return [_redacted(item, depth) for item in value]
     if isinstance(value, dict):
         kept: Dict[str, Any] = {}
         for key, item in value.items():
             held = item is not None and not isinstance(item, bool)
             kept[key] = (
-                REDACTED if held and _names_a_credential(key) else _redacted(item)
+                REDACTED
+                if held and _names_a_credential(key)
+                else _redacted(item, depth)
             )
         return kept
     return value

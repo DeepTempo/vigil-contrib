@@ -290,6 +290,12 @@ def test_a_search_past_its_time_says_so_and_how_to_narrow_it(client, analyst):
     assert answer.status_code == 504
     assert "Narrow the time range" in answer.json()["detail"]
 
+    with patch("core.log_events.log_events_router.SEARCH_TIMEOUT_MS", 1):
+        fitted = client.get(SEARCH, params={"q": "nothingmatchesthis", "fit": True})
+    assert fitted.status_code == 504
+    assert "time range" not in fitted.json()["detail"]
+    assert "every stored event" in fitted.json()["detail"]
+
 
 def test_a_search_with_no_times_reads_only_the_default_window(client, analyst):
     answer = client.get(SEARCH, params={"q": "word"}).json()

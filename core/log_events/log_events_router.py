@@ -113,11 +113,17 @@ def search_logs(
     except OperationalError as exc:
         if not isinstance(exc.orig, errors.QueryCanceled):
             raise
+        limit_passed = (
+            f"This search ran past its {SEARCH_TIMEOUT_MS // 1000} second limit"
+        )
         raise HTTPException(
             status_code=504,
             detail=(
-                f"This search ran past its {SEARCH_TIMEOUT_MS // 1000} second limit. Narrow the "
-                "time range, or add a field such as source: or host: alongside the words."
+                f"{limit_passed} while it looked through every stored event for matches. Add "
+                "a field such as source: or host: alongside the words."
+                if fit
+                else f"{limit_passed}. Narrow the time range, or add a field such as source: "
+                "or host: alongside the words."
             ),
         ) from exc
 

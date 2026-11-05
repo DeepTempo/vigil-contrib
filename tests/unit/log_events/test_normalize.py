@@ -1,5 +1,6 @@
 """What one source's row becomes in the one schema. No database."""
 
+import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -363,6 +364,68 @@ def test_credentials_are_found_at_any_depth_and_inside_text():
     assert stored["raw"]["nested"]["deep"]["password"] == "[redacted]"
     assert "page=2" in stored["raw"]["url"]
     assert "--user bob" in stored["raw"]["command"]
+
+
+SECRET = "sensitive-value"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"password":"sensitive-value"}',
+        '[{"token": "sensitive-value"}, 1]',
+        'login failed {"user": "bob", "apiKey": "sensitive-value"} retrying',
+        json.dumps({"inner": json.dumps({"db_secret": "sensitive-value"})}),
+        '[INFO] request {"auth": {"password": {"value": "sensitive-value"}}} done',
+    ],
+    ids=["object", "array", "inside words", "json in json", "after a bracket"],
+)
+def test_a_credential_in_json_inside_a_string_is_gone_from_everything_stored(message):
+    notes = Counter()
+    stored = _stored({"message": message}, notes)
+    assert SECRET not in str(stored["raw"])
+    assert SECRET not in stored["summary"]
+    assert SECRET not in stored["search_text"]
+    assert "[redacted]" in stored["raw"]["message"]
+    assert "redacted" in stored["tags"]
+    assert notes[NOTE_REDACTED] == 1
+
+
+def test_words_around_embedded_json_stay_and_it_stays_json():
+    stored = _stored({"message": 'before {"password":"sensitive-value"} after'})
+    assert stored["raw"]["message"] == 'before {"password": "[redacted]"} after'
+    again = _stored({"message": stored["raw"]["message"]})
+    assert again["raw"]["message"] == stored["raw"]["message"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"a": 1,   "b": ["x"]}',
+        "[INFO] nothing here",
+        "a {broken json",
+        "[" * 100_000,
+        '{"a":' * 10_000,
+    ],
+)
+def test_text_with_no_credential_stays_byte_for_byte(message):
+    stored = _stored({"message": message})
+    assert stored["raw"]["message"] == message
+    assert "redacted" not in stored["tags"]
+
+
+def test_past_the_size_bound_a_quoted_credential_is_still_found_in_the_text():
+    message = '{"password":"sensitive-value","pad":"' + "x" * 300_000 + '"}'
+    stored = _stored({"message": message})
+    assert SECRET not in str(stored["raw"])
+
+
+def test_past_the_depth_bound_nothing_breaks():
+    message = '{"password":"sensitive-value"}'
+    for _ in range(10):
+        message = json.dumps({"inner": message})
+    stored = _stored({"message": message})
+    assert stored["raw"]["message"]
 
 
 @pytest.mark.parametrize(

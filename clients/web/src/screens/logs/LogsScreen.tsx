@@ -18,6 +18,10 @@ const LIVE_EVERY = 5000
 const MIN = 60_000
 const ROUTE = `${basePath}/api/log-events/ingest`
 const storeFailed = (e: unknown) => `The log store did not answer, so these results are missing. ${errorText(e, '')}`.trim()
+const searchFailed = (e: unknown) => {
+  const status = (e as { response?: { status?: number } }).response?.status
+  return status === 422 || status === 504 ? errorText(e, 'That search could not be read.') : storeFailed(e)
+}
 
 const HELP: [string, string][] = [
   ['powershell', 'the word anywhere in the event, including the original record'],
@@ -223,8 +227,7 @@ export default function LogsScreen({ go, goSettings }: ConsoleScreenProps) {
       setError(null)
     } catch (e) {
       if (ctl.signal.aborted) return
-      const status = (e as { response?: { status?: number } }).response?.status
-      setError(status === 422 || status === 504 ? errorText(e, 'That search could not be read.') : storeFailed(e))
+      setError(searchFailed(e))
       // a missed live poll keeps the rows it was showing, under the error; a search shows no old rows as its answer
       if (!quiet) { setResult(null); setRows([]) }
     } finally {
@@ -273,7 +276,7 @@ export default function LogsScreen({ go, goSettings }: ConsoleScreenProps) {
       if (ctl?.signal.aborted || ctl !== abort.current) return
       setRows((prev) => [...prev, ...r.events.filter((e) => !prev.some((p) => p.id === e.id))])
     } catch (e) {
-      if (!ctl?.signal.aborted) setError(storeFailed(e))
+      if (!ctl?.signal.aborted) setError(searchFailed(e))
     } finally {
       if (ctl === abort.current) inflight.current = false
     }
@@ -516,7 +519,7 @@ export default function LogsScreen({ go, goSettings }: ConsoleScreenProps) {
               {off.size > 0 && <button type="button" className="x1-link" onClick={() => setOff(new Set())}>Show all sources</button>}
             </div>
           )}
-          {!error && (
+          {(!error || result) && (
             <div className="x1-card" style={{ padding: '10px 12px' }} aria-busy={loading}>
               <div className="x1-row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
                 <span className="x1-muted" style={{ fontSize: 12 }} aria-live="polite" data-testid="logs-total">
