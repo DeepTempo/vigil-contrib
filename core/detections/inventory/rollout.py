@@ -18,9 +18,10 @@ reverts in the same tick.
 
 The sweep then writes a stage row (actor 'system', proof holding the numbers)
 for each move that is due: shadow -> live after a quiet, passing week (at most
-``LIVE_PER_DAY`` a day across all rules), live -> shadow on noise or a loud
-day, shadow -> off after ``OFF_AFTER_FAILURES`` failed runs in a row. No stage
-row is written while Stop is set, or while the ceiling cannot be read.
+``LIVE_PER_DAY`` a day across all rules) unless a detection proposal owns the
+copy, live -> shadow on noise or a loud day, shadow -> off after
+``OFF_AFTER_FAILURES`` failed runs in a row. No stage row is written while Stop
+is set, or while the ceiling cannot be read.
 
 Nothing is written to Elasticsearch or Kibana.
 """
@@ -36,14 +37,30 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from sqlalchemy import and_, bindparam, func, insert, select, text, update
+from sqlalchemy import (
+    and_,
+    bindparam,
+    exists,
+    func,
+    insert,
+    or_,
+    select,
+    text,
+    update,
+)
 
 from core.detections.inventory import kibana, readers, sees
 from core.integrations._base import search_budget
 from core.integrations._base.ids import EXTERNAL_ID_MAX, fit_id
 from core.integrations.elastic.descriptor import ELASTIC
 from core.storage.connection import get_db_manager
-from core.storage.models import DetectionRule, DetectionRuleStage, DetectionRuleVersion
+from core.storage.models import (
+    DetectionProposal,
+    DetectionProposalEvent,
+    DetectionRule,
+    DetectionRuleStage,
+    DetectionRuleVersion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +117,23 @@ def _toml_rule(content: Mapping[str, Any]) -> Dict[str, Any]:
     except tomllib.TOMLDecodeError:
         return {}
     return rule if isinstance(rule, dict) else {}
+
+
+def proposal_owns(session: Any, rule_id: int) -> bool:
+    """Whether a detection proposal holds this rule or ever saved it.
+
+    Its rule_id alone will not do: it names one copy of several, and going back to draft clears
+    it while the copies keep running.
+    """
+    saved = {"saved": [{"rule_id": rule_id}]}
+    return session.scalar(
+        select(
+            or_(
+                exists().where(DetectionProposal.rule_id == rule_id),
+                exists().where(DetectionProposalEvent.evidence.contains(saved)),
+            )
+        )
+    )
 
 
 def _copies() -> List[Copy]:
@@ -442,9 +476,10 @@ def _due(
                 f"{failures} failed runs in a row",
                 {"failures": failures, "last_reason": runs.get("reason")},
             )
-        if copy.rule.get(PERSON_PROMOTES):
-            return None
         if now - copy.stage_at < timedelta(days=SHADOW_DAYS):
+            return None
+        # The flag only holds back: a copy whose first save failed has no proposal row yet.
+        if copy.rule.get(PERSON_PROMOTES) or proposal_owns(session, copy.rule_id):
             return None
         week = _week(now)
         run_days = runs.get("days") or {}

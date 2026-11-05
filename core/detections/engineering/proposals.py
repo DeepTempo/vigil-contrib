@@ -633,6 +633,7 @@ def shadow(proposal_id: str, actor: str, reason: str = "") -> Dict[str, Any]:
             splunk_yaml=package.splunk_copy(doc, splunk[0]) if splunk else None,
             elastic_toml=package.elastic_copy(doc, *elastic) if elastic else None,
             sigma_yaml=proposal.sigma,
+            for_person=actor,
         )
         saved = result.get("saved") or []
         staged = [row for row in saved if row.get("stage") is not None]

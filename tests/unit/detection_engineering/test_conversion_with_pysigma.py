@@ -89,8 +89,10 @@ def test_converted_queries_build_copies_the_overlay_reader_accepts():
     assert splunk.native_key != elastic.native_key != DOC["id"]
 
 
-def test_a_converted_elastic_copy_can_be_run_and_only_a_person_takes_it_live():
+@pytest.mark.database
+def test_a_converted_elastic_copy_can_be_run_and_only_a_person_takes_it_live(db):
     from core.detections.inventory import rollout
+    from core.storage.unit_of_work import unit_of_work
 
     rows = list(_rows("elastic-lucene").values())
     query, language = targets.overlay_queries(rows)["elastic"]
@@ -105,20 +107,21 @@ def test_a_converted_elastic_copy_can_be_run_and_only_a_person_takes_it_live():
     }
 
     def due(rule):
-        return rollout._due(
-            None,
-            rollout.Copy(
-                rule_id=1,
-                version=1,
-                name="copy",
-                stage="shadow",
-                stage_at=now - timedelta(days=8),
-                checks=quiet,
-                rule=rule,
-            ),
-            now,
-            0,
-        )
+        with unit_of_work() as session:
+            return rollout._due(
+                session,
+                rollout.Copy(
+                    rule_id=1,
+                    version=1,
+                    name="copy",
+                    stage="shadow",
+                    stage_at=now - timedelta(days=8),
+                    checks=quiet,
+                    rule=rule,
+                ),
+                now,
+                0,
+            )
 
     assert due({})[0] == "live"
     assert due(copy) is None

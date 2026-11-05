@@ -1,15 +1,21 @@
 """The proposal's life on real Postgres. Rows are invented; the rule evaluator is Vigil's."""
 
 import asyncio
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from core.cases.agent_closure import clear_http_actor, note_http_actor
+from core.detections.detection_rules_service import DetectionRulesService
 from core.detections.engineering import proposals, sigma_text, targets
+from core.detections.inventory import rollout
 from core.detections.overlay import Refused
+from core.detections.tools import get_security_detection_tools
 from core.llm import oneshot
-from core.storage.models import DetectionRuleStage
+from core.storage.models import DetectionRule, DetectionRuleStage
 from core.storage.models.detection_proposal import InvalidProposalMove
 from core.storage.unit_of_work import unit_of_work
 
@@ -439,3 +445,137 @@ def test_a_model_reply_with_no_rule_is_refused_and_stores_nothing(db, monkeypatc
 def test_a_draft_needs_something_to_draft_from(db):
     with pytest.raises(Refused, match="needs a case"):
         asyncio.run(proposals.draft_from_model(actor="dana.reviewer"))
+
+
+AGENT_COPY = """
+[rule]
+rule_id = "agent-rule-1"
+name = "A rule an agent drafted"
+description = "No proposal holds this one"
+type = "query"
+language = "lucene"
+index = ["logs-*"]
+query = "process.name: certutil.exe"
+severity = "low"
+risk_score = 21
+"""
+
+
+@pytest.fixture
+def in_shadow(replayed, person):
+    """Every copy a real conversion makes, in shadow."""
+    proposals.convert(replayed["proposal_id"], person)
+    return proposals.shadow(replayed["proposal_id"], person)
+
+
+def _saved_row(view, source):
+    rows = view["latest"]["shadow"]["evidence"]["saved"]
+    return next(row for row in rows if row["source"] == source)
+
+
+def _copy_file(row):
+    root = DetectionRulesService().overlay_source()["local_path"]
+    return Path(root, row["file_path"])
+
+
+def _agent_saves(**copies):
+    return asyncio.run(get_security_detection_tools().save_detection_rule(**copies))
+
+
+def _latest_version(rule_id):
+    with unit_of_work() as session:
+        return session.get(DetectionRule, rule_id).latest_version
+
+
+def _due_after_a_quiet_week(rule_id, rule):
+    now = datetime.now(timezone.utc)
+    week = [(now - timedelta(days=i)).date().isoformat() for i in range(7)]
+    copy = rollout.Copy(
+        rule_id=rule_id,
+        version=1,
+        name="copy",
+        stage="shadow",
+        stage_at=now - timedelta(days=8),
+        checks={"runs": {"days": {day: {"pass": 1, "fail": 0} for day in week}}},
+        rule=rule,
+    )
+    with unit_of_work() as session:
+        return rollout._due(session, copy, now, 0)
+
+
+def test_an_agent_cannot_overwrite_a_proposals_elastic_copy(in_shadow):
+    row = _saved_row(in_shadow, "elastic")
+    file = _copy_file(row)
+    held = file.read_text()
+    tampered = re.sub(
+        r"^query = .*$", 'query = "user.name: *"', held, flags=re.MULTILINE
+    ).replace("person_promotes = true\n", "")
+
+    result = _agent_saves(elastic_toml=tampered, for_person="dana.reviewer")
+
+    assert result["saved"] == []
+    assert "belongs to a detection proposal" in result["error"]
+    assert file.read_text() == held
+    assert _latest_version(row["rule_id"]) == row["version"]
+
+
+def test_an_agent_cannot_overwrite_any_form_of_a_proposal_and_saves_nothing_else(
+    in_shadow,
+):
+    elastic_dir = _copy_file(_saved_row(in_shadow, "elastic")).parent
+    for source, copies in (
+        ("splunk", lambda text: {"splunk_yaml": text}),
+        ("sigma", lambda text: {"sigma_yaml": text, "elastic_toml": AGENT_COPY}),
+    ):
+        file = _copy_file(_saved_row(in_shadow, source))
+        held = file.read_text()
+        result = _agent_saves(**copies(f"{held}\n# changed\n"))
+        assert result["saved"] == [], source
+        assert "belongs to a detection proposal" in result["error"], source
+        assert file.read_text() == held, source
+        assert not (elastic_dir / "agent-rule-1.toml").exists(), source
+
+
+def test_a_copy_stays_the_proposals_after_the_proposal_goes_back_to_draft(
+    in_shadow, person
+):
+    row = _saved_row(in_shadow, "elastic")
+    file = _copy_file(row)
+    held = file.read_text()
+    view = proposals.edit(
+        in_shadow["proposal_id"], in_shadow["sigma"].replace("high", "low"), person
+    )
+    assert view["state"] == "draft" and view["rule_id"] is None
+
+    assert "error" in _agent_saves(elastic_toml=f"{held}\n# changed\n")
+    assert file.read_text() == held
+    assert _due_after_a_quiet_week(row["rule_id"], {}) is None
+
+
+def test_a_rule_a_proposal_set_out_to_prove_is_held_by_it(db, person):
+    sigma, _ = sigma_text.fill_in(RULE, None)
+    saved = _agent_saves(elastic_toml=AGENT_COPY, sigma_yaml=sigma)["saved"]
+    form = next(row for row in saved if row["source"] == "sigma")
+    proposals.from_rule(form["rule_id"], person)
+
+    result = _agent_saves(elastic_toml=AGENT_COPY, sigma_yaml=f"{sigma}\n# changed\n")
+
+    assert "belongs to a detection proposal" in result["error"]
+    assert _latest_version(form["rule_id"]) == 1
+
+
+@pytest.mark.parametrize("source", ["elastic", "splunk"])
+def test_the_sweep_never_promotes_a_proposals_copy_with_no_flag_in_its_file(
+    in_shadow, source
+):
+    row = _saved_row(in_shadow, source)
+    assert _due_after_a_quiet_week(row["rule_id"], {}) is None
+
+
+def test_an_agents_own_rule_can_change_and_the_sweep_still_promotes_it(db):
+    first = _agent_saves(elastic_toml=AGENT_COPY)["saved"][0]
+    second = _agent_saves(
+        elastic_toml=AGENT_COPY.replace("certutil.exe", "bitsadmin.exe")
+    )["saved"][0]
+    assert (first["rule_id"], second["version"]) == (second["rule_id"], 2)
+    assert _due_after_a_quiet_week(first["rule_id"], {})[0] == "live"

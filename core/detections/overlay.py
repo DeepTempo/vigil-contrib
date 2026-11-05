@@ -184,26 +184,34 @@ def _prepare(copies: Dict[str, str]) -> List[Tuple[str, str, RuleRecord]]:
 
 
 def _targets(
-    root: str, prepared: List[Tuple[str, str, RuleRecord]]
+    root: str, prepared: List[Tuple[str, str, RuleRecord]], for_person: Optional[str]
 ) -> List[Tuple[str, str]]:
     """(file, text) per copy: where the overlay last held it, else a new file.
 
     Refused when an id already names another kind of copy, or a new file would
-    land on one already there: either would turn an existing rule off.
+    land on one already there: either would turn an existing rule off. Refused
+    too when a detection proposal owns the id, unless its flow saves for a person.
     """
     keys = [record.native_key for _, _, record in prepared]
     with get_db_manager().session_scope() as session:
-        stored = {
-            key: (language, path)
-            for key, language, path in session.execute(
-                select(
-                    DetectionRule.native_key, DetectionRule.language, DetectionRule.path
-                ).where(
-                    DetectionRule.source == readers.OVERLAY_SOURCE,
-                    DetectionRule.native_key.in_(keys),
+        rows = session.execute(
+            select(
+                DetectionRule.id,
+                DetectionRule.native_key,
+                DetectionRule.language,
+                DetectionRule.path,
+            ).where(
+                DetectionRule.source == readers.OVERLAY_SOURCE,
+                DetectionRule.native_key.in_(keys),
+            )
+        ).all()
+        for rule_id, key, _, _ in rows:
+            if not for_person and rollout.proposal_owns(session, rule_id):
+                raise Refused(
+                    f"id {key} belongs to a detection proposal: "
+                    "a person changes it through that proposal"
                 )
-            ).all()
-        }
+    stored = {key: (language, path) for _, key, language, path in rows}
     targets = []
     for language, text, record in prepared:
         held, path = stored.get(record.native_key, (language, None))
@@ -265,8 +273,14 @@ def save_rule(
     sigma_yaml: Optional[str] = None,
     proven_events: Optional[list] = None,
     ruled_out_events: Optional[list] = None,
+    *,
+    for_person: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Write each copy into the overlay and sync it; refuse the lot if any part fails."""
+    """Write each copy into the overlay and sync it; refuse the lot if any part fails.
+
+    ``for_person`` is the signed-in person a proposal's shadow step acts for. The agent tool
+    never passes it.
+    """
     copies = {
         language: text
         for language, text in (
@@ -287,7 +301,7 @@ def save_rule(
         service = DetectionRulesService()
         source = service.overlay_source()
         try:
-            targets = _targets(source["local_path"], prepared)
+            targets = _targets(source["local_path"], prepared, for_person)
         except Refused as exc:
             return {"error": str(exc), "saved": []}
         for rel, text in targets:
