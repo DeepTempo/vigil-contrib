@@ -199,6 +199,7 @@ Thumbs.db
 
 # Logs
 logs/
+!clients/web/src/screens/logs/
 *.pid
 
 # Secrets

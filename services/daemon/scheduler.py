@@ -302,17 +302,26 @@ class TaskScheduler:
         if reads:
             logger.info("Cleanup removed %d episodic read log rows", reads)
 
+        # Log events keep their own LOG_EVENTS_RETENTION_DAYS, not this cutoff.
+        from core.log_events.retention import sweep as sweep_log_events
+
+        log_events = await asyncio.to_thread(sweep_log_events)
+        if log_events:
+            logger.info("Cleanup removed %d log events past retention", log_events)
+
         logger.info(
             "Cleanup complete: expired %d unanswered approvals, removed %d "
-            "episodic read log rows",
+            "episodic read log rows and %d log events",
             expired,
             reads,
+            log_events,
         )
 
         return {
             "cutoff_date": cutoff.isoformat(),
             "approvals_expired": expired,
             "read_log_removed": reads,
+            "log_events_removed": log_events,
         }
 
     async def _run_probe_sweep(self):

@@ -84,13 +84,17 @@ _ALWAYS_EXEMPT = ("/api/webhooks/", "/mcp", "/internal/")
 
 
 def _is_ingestion_path(path: str) -> bool:
-    """The ingestion router, including under VIGIL_CONTEXT_PATH.
+    """The ingestion routers, including under VIGIL_CONTEXT_PATH.
 
-    The marker stops at ``ingest`` so ``/api/ingestible`` does not match, and
+    Each marker stops at ``ingest`` so ``/api/ingestible`` does not match, and
     the bare path matches as well as its children.
     """
-    marker = f"{context_path_prefix()}/api/ingest"
-    return path == marker or path.startswith(marker + "/")
+    prefix = context_path_prefix()
+    for route in ("/api/ingest", "/api/log-events/ingest"):
+        marker = f"{prefix}{route}"
+        if path == marker or path.startswith(marker + "/"):
+            return True
+    return False
 
 
 def _ingestion_without_session(request: Request) -> bool:
