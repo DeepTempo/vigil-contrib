@@ -952,3 +952,58 @@ def test_one_ticket_naming_two_alerts_of_a_kind_is_one_label(client, admin):
             {"r": run_id, "at": NOW - timedelta(days=1)},
         )
     assert row_of(client)["track_record"]["imported_benign"] == 1
+
+
+@pytest.fixture
+def policy_only(client, act_as):
+    """A person who may read autonomy and not one finding."""
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO roles (role_id, name, description, permissions, is_system_role) "
+                "VALUES ('role-ka-policy', 'Policy only', 'Autonomy, no findings', "
+                """'{"ai_autonomy.read": true}', false) ON CONFLICT DO NOTHING"""
+            )
+        )
+    act_as("ka-admin")
+    _adopted(client)
+    act_as("ka-policy", "role-ka-policy")
+    return client
+
+
+def test_without_findings_read_the_list_shows_policy_and_no_finding_content(
+    policy_only,
+):
+    body = policy_only.get(BASE).json()
+    assert body["redacted"] is True
+    row = body["kinds"][0]
+    assert row["key"] == kind_key()
+    assert row["mode"] == "close"
+    assert row["track_record"]["agreed"] == 59
+    for name in ("signature", "source", "title", "rule_id", "mode_reason"):
+        assert row[name] is None, name
+    assert row["adoption"]["reason"] is None
+    assert TITLE not in policy_only.get(BASE).text
+    assert RULE not in policy_only.get(BASE).text
+
+
+def test_without_findings_read_the_record_has_no_reasons_or_evidence(policy_only):
+    answer = policy_only.get(f"{BASE}/{kind_key()}/events")
+    assert answer.status_code == 200
+    event = answer.json()["events"][0]
+    assert event["event"] == "adopt"
+    assert event["reason"] is None
+    assert event["evidence"] == {}
+    assert RULE not in answer.text
+
+
+def test_without_findings_read_what_a_policy_closed_is_refused(policy_only):
+    assert policy_only.get(f"{BASE}/{kind_key()}/closed").status_code == 403
+
+
+def test_with_findings_read_the_list_keeps_its_content(client, admin):
+    earn()
+    body = client.get(BASE).json()
+    assert body["redacted"] is False
+    assert body["kinds"][0]["title"] == TITLE
+    assert body["kinds"][0]["rule_id"] == RULE

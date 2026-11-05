@@ -30,15 +30,19 @@ export interface KindAdoption {
   by_label: string | null
   at: string
   expires_at: string
-  reason: string
+  /** Null for someone without findings.read. */
+  reason: string | null
   clean_labels: number
 }
 
 export interface AlertKind {
   key: string
-  signature: string
-  source: string
-  title: string
+  /** Signature, source, title and rule name what fired, so they are null without findings.read. */
+  signature: string | null
+  source: string | null
+  title: string | null
+  /** The source's rule identifier. Null when this kind is known only by its title. */
+  rule_id: string | null
   mode: KindMode
   mode_reason: string | null
   track_record: KindTrackRecord
@@ -54,6 +58,11 @@ export interface KindsView {
   lifetime_days: number
   auto_severities: string[]
   summary: { kinds: number; closing: number; closed_by_vigil: number; overturned: number }
+  /** The reader may not read findings, so kinds show modes and counts only. */
+  redacted: boolean
+  /** The install holds more than one read may take, so no kind can be adopted. */
+  incomplete: boolean
+  kinds_shown: number
   daily: { day: string; asked: number; closed: number }[]
   kinds: AlertKind[]
 }
@@ -65,7 +74,7 @@ export interface KindEvent {
   to_mode: string
   actor: string
   actor_label: string | null
-  reason: string
+  reason: string | null
   evidence: Record<string, unknown>
   clean_labels: number
   at: string

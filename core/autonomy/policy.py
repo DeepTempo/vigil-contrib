@@ -644,11 +644,37 @@ def kinds_view(session: Session, now: Optional[datetime] = None) -> Dict[str, An
             "closed_by_vigil": sum(r.closed_by_vigil for r in records.values()),
             "overturned": sum(r.overturned for r in records.values()),
         },
+        "redacted": False,
         "incomplete": any(r.incomplete for r in records.values()),
         "kinds_shown": min(len(kinds), KINDS_SHOWN),
         "daily": daily_counts(_daily_rows(session, now.date()), now.date(), DAILY_DAYS),
         "kinds": kinds[:KINDS_SHOWN],
     }
+
+
+def policy_only_view(view: Mapping[str, Any]) -> Dict[str, Any]:
+    """What someone with no right to read findings may see: modes and counts. A signature, a
+    title or a rule names what fired, and a person's reason can quote it."""
+    return {
+        **view,
+        "redacted": True,
+        "kinds": [
+            {
+                **kind,
+                "signature": None,
+                "source": None,
+                "title": None,
+                "rule_id": None,
+                "mode_reason": None,
+                "adoption": kind["adoption"] and {**kind["adoption"], "reason": None},
+            }
+            for kind in view["kinds"]
+        ],
+    }
+
+
+def policy_only_events(events: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    return [{**event, "reason": None, "evidence": {}} for event in events]
 
 
 def _signature_from_policies(session: Session, key: str) -> Optional[str]:

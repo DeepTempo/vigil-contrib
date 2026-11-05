@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from core.auth.auth_service import _is_service_account
-from core.auth.permissions import deny_unless, permission_gate
+from core.auth.permissions import deny_unless, missing_permission, permission_gate
 from core.autonomy import policy
 from core.response.ceiling import read_ceiling
 from core.routing import Auth, RouterMeta, UnitOfWorkSession
@@ -27,7 +27,9 @@ ROUTER_META = RouterMeta(
 )
 
 _READ = [permission_gate("ai_autonomy.read")]
-_ADOPT = [permission_gate("ai_autonomy.write")]
+_READ_FINDINGS = "findings.read"
+_READ_CLOSED = [*_READ, permission_gate(_READ_FINDINGS)]
+_ADOPT = [permission_gate("ai_autonomy.write"), permission_gate(_READ_FINDINGS)]
 _REVOKE = [permission_gate("ai_autonomy.stop")]
 # Whoever may clear a noise mark may say this one was wrong. It only lowers autonomy.
 _OVERTURN = [permission_gate("findings.write")]
@@ -65,9 +67,21 @@ def _reason(body: Optional[ReasonBody], default: str) -> str:
     return ((body.reason if body else None) or "").strip() or default
 
 
+def _reads_findings(user: User, session: UnitOfWorkSession) -> bool:
+    return missing_permission(user.user_id, _READ_FINDINGS, session) is None
+
+
 @router.get("", dependencies=_READ)
-def list_kinds(session: UnitOfWorkSession) -> Dict[str, Any]:
-    return policy.kinds_view(session)
+def list_kinds(
+    session: UnitOfWorkSession,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    view = policy.kinds_view(session)
+    return (
+        view
+        if _reads_findings(current_user, session)
+        else policy.policy_only_view(view)
+    )
 
 
 @router.put("/settings", dependencies=_READ)
@@ -127,11 +141,18 @@ def revoke_kind(
 
 
 @router.get("/{key}/events", dependencies=_READ)
-def kind_events(key: str, session: UnitOfWorkSession) -> Dict[str, Any]:
-    return {"events": policy.events_view(session, key)}
+def kind_events(
+    key: str,
+    session: UnitOfWorkSession,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    events = policy.events_view(session, key)
+    if not _reads_findings(current_user, session):
+        events = policy.policy_only_events(events)
+    return {"events": events}
 
 
-@router.get("/{key}/closed", dependencies=_READ)
+@router.get("/{key}/closed", dependencies=_READ_CLOSED)
 def kind_closed(
     key: str,
     session: UnitOfWorkSession,

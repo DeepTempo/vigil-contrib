@@ -124,8 +124,9 @@ function EarnCard({ view }: { view: KindsView }) {
         <li>Every kind starts on Ask a person.</li>
         <li>People make at least {view.bar} separate decisions that it is benign in {view.window_days} days, and none that it is real. One closed case is one decision, however many alerts it holds, and a burst of closes counts for nothing.</li>
         <li>No alert of the kind was rated high or critical in that time.</li>
+        <li>It is exactly one rule in its source, by that source's rule identifier. A kind known only by its title cannot be adopted, because an alert can write its own title.</li>
         <li>A signed-in person adopts it. Vigil never adopts for itself.</li>
-        <li>Vigil then closes only alerts rated {view.auto_severities.join(' or ')}, after triage, and writes the policy id as the reason. What it closes never counts toward its own record.</li>
+        <li>Vigil then closes only alerts of that same rule rated {view.auto_severities.join(' or ')}, and only when triage recommends dismissing them. It writes the policy id as the reason. What it closes never counts toward its own record.</li>
         <li>One real closure or one overturn suspends it. It expires after {view.lifetime_days} days unless a person re-adopts it.</li>
       </ul>
     </div>
@@ -149,20 +150,21 @@ function KindDetail({
   const [reason, setReason] = useState('')
   const [confirm, setConfirm] = useState<'adopt' | 'revoke' | null>(null)
   const [overturning, setOverturning] = useState<ClosedAlert | null>(null)
-  const canAdopt = hasPermission('ai_autonomy.write')
+  const canReadFindings = hasPermission('findings.read') && !view.redacted
+  const canAdopt = hasPermission('ai_autonomy.write') && canReadFindings
   const canRevoke = hasPermission('ai_autonomy.stop')
   const canOverturn = hasPermission('findings.write')
   const track = kind.track_record
 
   const loadHistory = useCallback(async (sample = false) => {
     try {
-      const [ev, cl] = await Promise.all([autonomyKindsApi.events(kind.key), autonomyKindsApi.closed(kind.key, sample)])
+      const ev = await autonomyKindsApi.events(kind.key)
       setEvents(ev.data.events)
-      setClosed(cl.data)
+      if (canReadFindings) setClosed((await autonomyKindsApi.closed(kind.key, sample)).data)
     } catch (err) {
       setError(errorText(err, 'Could not read this kind’s history.'))
     }
-  }, [kind.key])
+  }, [kind.key, canReadFindings])
 
   useEffect(() => { void loadHistory() }, [loadHistory])
 
@@ -189,13 +191,14 @@ function KindDetail({
       <div className="x1-grid2">
         <div style={{ display: 'grid', gap: 8, alignContent: 'start' }}>
           <dl className="x1-kv">
+            {kind.title !== null && <><dt>Source rule</dt><dd className="x1-mono" data-testid="kind-rule">{kind.rule_id ?? 'None. Known only by its title.'}</dd></>}
             <dt>Closed here by people</dt><dd>{track.closed_here_benign} benign, {track.closed_here_real} real</dd>
             <dt>Imported from cold start</dt><dd>{track.imported_benign} benign, {track.imported_real} real. Tickets from your history, not closures here.</dd>
             <dt>Overturned</dt><dd>{track.overturned}</dd>
             <dt>Closed by Vigil</dt><dd>{track.closed_by_vigil}. Not counted as evidence.</dd>
             {track.bulk_ignored > 0 && <><dt>Ignored as a burst</dt><dd>{track.bulk_ignored}</dd></>}
             <dt>Miss bound</dt><dd>{track.miss_bound === null ? 'None' : `At most ${pct(track.miss_bound)} of this kind is really an attack, at 95% confidence`}</dd>
-            {kind.adoption && <><dt>Adopted by</dt><dd>{kind.adoption.by_label ?? kind.adoption.by}, {utcDayClock(kind.adoption.at)} UTC. {kind.adoption.reason}</dd></>}
+            {kind.adoption && <><dt>Adopted by</dt><dd>{kind.adoption.by_label ?? kind.adoption.by}, {utcDayClock(kind.adoption.at)} UTC.{kind.adoption.reason ? ` ${kind.adoption.reason}` : ''}</dd></>}
           </dl>
           <div className="x1-row">
             {(canAdopt || canRevoke) && (
@@ -233,7 +236,7 @@ function KindDetail({
           ))}
         </div>
       </div>
-      <div style={{ display: 'grid', gap: 6 }}>
+      {canReadFindings && <div style={{ display: 'grid', gap: 6 }}>
         <div className="x1-row" style={{ justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.6px', color: 'var(--tx2)' }}>
             What this policy closed{closed ? ` (${closed.total})` : ''}
@@ -254,7 +257,7 @@ function KindDetail({
             )}
           </div>
         ))}
-      </div>
+      </div>}
       <ConfirmDialog
         open={confirm === 'adopt'}
         title="Let Vigil close this kind on its own?"
@@ -316,7 +319,7 @@ export default function AutonomyPolicyScreen({ goSettings }: ConsoleScreenProps)
     autonomyApi.get().then(({ data }) => setCeiling(data)).catch(() => setCeilingFailed(true))
   }, [reload])
 
-  const focusKey = view?.kinds.find((k) => k.key === wanted || k.signature === wanted)?.key ?? null
+  const focusKey = view?.kinds.find((k) => k.key === wanted || (k.signature !== null && k.signature === wanted))?.key ?? null
   useEffect(() => {
     if (focusKey) setOpen(focusKey)
   }, [focusKey])
@@ -366,6 +369,22 @@ export default function AutonomyPolicyScreen({ goSettings }: ConsoleScreenProps)
         )}
         <Stat value="None" label="containment a per-kind policy can take. It only marks alerts as noise." />
       </div>
+
+      {view.redacted && (
+        <div className="x1-card x1-note" data-testid="kinds-redacted">
+          You can see each policy and its counts. Reading what fired, and what a policy closed, needs permission to read findings.
+        </div>
+      )}
+      {view.incomplete && (
+        <div className="x1-card x1-note" data-testid="kinds-incomplete">
+          This install holds more alerts than one read may take, so these records are incomplete and no kind can be adopted.
+        </div>
+      )}
+      {view.kinds_shown < view.summary.kinds && (
+        <div className="x1-card x1-note" data-testid="kinds-shown">
+          Showing the first {view.kinds_shown.toLocaleString()} of {view.summary.kinds.toLocaleString()} kinds, adopted and eligible kinds first.
+        </div>
+      )}
 
       <div className={`x1-card ${view.close_enabled ? 'x1-note' : ''}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 13, color: 'var(--tx0)' }}>
@@ -442,8 +461,8 @@ export default function AutonomyPolicyScreen({ goSettings }: ConsoleScreenProps)
                         }}
                       >
                         <td style={{ color: 'var(--tx0)' }}>
-                          {kind.title}
-                          <div className="x1-muted" style={{ fontSize: 12 }}>{kind.source}</div>
+                          {kind.title ?? <span className="x1-muted">Kind {kind.key}</span>}
+                          {kind.source !== null && <div className="x1-muted" style={{ fontSize: 12 }}>{kind.source}</div>}
                         </td>
                         <td><ModePill mode={kind.mode} /></td>
                         <td className="num">{track.alerts_seen}</td>
