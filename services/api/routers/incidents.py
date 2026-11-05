@@ -5,11 +5,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.auth.permissions import APPROVE_PERMISSION, missing_permission
-from core.incidents.read import NotAnIncident, list_incidents, read_story
+from core.incidents.read import NotAnIncident, list_incidents, read_steps, read_story
 from core.incidents.story import (
     MAX_STEPS_PAGE,
     STEPS_PAGE,
     IncidentList,
+    StepPage,
     Story,
     Viewer,
 )
@@ -51,22 +52,37 @@ ROUTER_META = RouterMeta(
 def get_incidents(
     status: Literal["open", "all"] = "open",
     limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     viewer: Viewer = Depends(_reader),
 ):
-    return list_incidents(open_only=status == "open", limit=limit, viewer=viewer)
+    return list_incidents(
+        open_only=status == "open", limit=limit, offset=offset, viewer=viewer
+    )
 
 
 @router.get("/{case_id}", response_model=Story)
-def get_incident(
-    case_id: str,
-    steps_offset: int = Query(0, ge=0),
-    steps_limit: int = Query(STEPS_PAGE, ge=1, le=MAX_STEPS_PAGE),
-    viewer: Viewer = Depends(_reader),
-):
+def get_incident(case_id: str, viewer: Viewer = Depends(_reader)):
     try:
-        story = read_story(case_id, viewer, steps_offset, steps_limit)
+        story = read_story(case_id, viewer)
     except NotAnIncident as refused:
         raise HTTPException(status_code=404, detail=str(refused))
     if story is None:
         raise HTTPException(status_code=404, detail=f"No case named {case_id}.")
     return story
+
+
+@router.get(
+    "/{case_id}/steps", response_model=StepPage, dependencies=[Depends(_reader)]
+)
+def get_incident_steps(
+    case_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(STEPS_PAGE, ge=1, le=MAX_STEPS_PAGE),
+):
+    try:
+        page = read_steps(case_id, offset, limit)
+    except NotAnIncident as refused:
+        raise HTTPException(status_code=404, detail=str(refused))
+    if page is None:
+        raise HTTPException(status_code=404, detail=f"No case named {case_id}.")
+    return page

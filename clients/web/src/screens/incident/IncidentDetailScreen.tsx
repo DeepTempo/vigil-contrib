@@ -194,7 +194,7 @@ function storySnapshot(story: Story): string {
 
 const STEPS_MORE = 200
 
-function StoryView({ story, reload, showMoreSteps, openChat, openCase }: { story: Story; reload: () => void; showMoreSteps: () => void } & Pick<ConsoleScreenProps, 'openChat' | 'openCase'>) {
+function StoryView({ story, reload, showMoreSteps, readFailed, openChat, openCase }: { story: Story; reload: () => void; showMoreSteps: () => void; readFailed: string | null } & Pick<ConsoleScreenProps, 'openChat' | 'openCase'>) {
   const [popup, setPopup] = useState<string | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -286,6 +286,7 @@ function StoryView({ story, reload, showMoreSteps, openChat, openCase }: { story
               <button type="button" className="btn ghost" onClick={showMoreSteps}>Show {Math.min(STEPS_MORE, story.steps_total - story.steps.length).toLocaleString()} more</button>
             </div>
           )}
+          {readFailed && <div className="x1-card x1-error" role="alert" style={{ marginTop: 10 }} data-testid="incident-read-failed">{readFailed}</div>}
           {story.rules_loaded === 0 && story.unmatched_total > 0 && (
             <div className="x1-card x1-note" style={{ marginTop: 10 }}>The rule inventory is empty, so nothing here can be matched to a rule. Rules appear under Detections once a source of rules is synced.</div>
           )}
@@ -402,19 +403,36 @@ function StoryView({ story, reload, showMoreSteps, openChat, openCase }: { story
   )
 }
 
+const INCIDENTS_PAGE = 50
+
 function IncidentIndex({ go, openChat }: Pick<ConsoleScreenProps, 'go' | 'openChat'>) {
   const [list, setList] = useState<IncidentList | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const [reading, setReading] = useState(false)
   useEffect(() => {
     let gone = false
-    incidentsApi.list({ status: 'all' }).then(
+    incidentsApi.list({ status: 'all', limit: INCIDENTS_PAGE }).then(
       (res) => { if (!gone) setList(res.data) },
       (err) => { if (!gone) setFailed(errorText(err, 'Could not read incidents')) },
     )
     return () => { gone = true }
   }, [])
-  usePageSnapshot('incident', list ? `${list.total} incidents. ${list.items.map((i) => `${i.case_id}: ${i.title} (${i.status})`).join('; ')}` : '')
-  if (failed) return <EmptyState error icon="alert" title="Couldn’t read incidents" body={failed} />
+  const showMore = () => {
+    if (!list || reading) return
+    setReading(true)
+    incidentsApi.list({ status: 'all', limit: INCIDENTS_PAGE, offset: list.items.length }).then(
+      (res) => {
+        setFailed(null)
+        setList((held) => held && {
+          total: res.data.total,
+          items: [...held.items, ...res.data.items.filter((row) => !held.items.some((h) => h.case_id === row.case_id))],
+        })
+      },
+      (err) => setFailed(errorText(err, 'Could not read more incidents')),
+    ).finally(() => setReading(false))
+  }
+  usePageSnapshot('incident', list ? `${list.items.length} of ${list.total} incidents listed. ${list.items.map((i) => `${i.case_id}: ${i.title} (${i.status})`).join('; ')}` : '')
+  if (failed && !list) return <EmptyState error icon="alert" title="Couldn’t read incidents" body={failed} />
   if (!list) return <EmptyState loading icon="clock" title="Loading incidents…" />
   if (list.items.length === 0) {
     return (
@@ -446,6 +464,13 @@ function IncidentIndex({ go, openChat }: Pick<ConsoleScreenProps, 'go' | 'openCh
           </tbody>
         </table>
       </div>
+      {failed && <div className="x1-card x1-error" role="alert" data-testid="incident-index-failed">{failed}</div>}
+      {list.items.length < list.total && (
+        <div className="x1-row" style={{ justifyContent: 'space-between' }} data-testid="incident-index-more">
+          <span className="x1-muted" style={{ fontSize: 12.5 }}>Showing {list.items.length.toLocaleString()} of {list.total.toLocaleString()} incidents, most recently active first.</span>
+          <button type="button" className="btn ghost" disabled={reading} onClick={showMore}>Show {Math.min(INCIDENTS_PAGE, list.total - list.items.length).toLocaleString()} more</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -456,7 +481,7 @@ function IncidentCase({ caseId, openChat, openCase, go }: { caseId: string } & P
   const load = useCallback(() => {
     incidentsApi.get(caseId).then(
       (res) => { setStory(res.data); setFailed(null) },
-      (err) => { setStory(null); setFailed(errorText(err, 'Could not read this incident')) },
+      (err) => setFailed(errorText(err, 'Could not read this incident')),
     )
   }, [caseId])
   useEffect(() => {
@@ -466,16 +491,23 @@ function IncidentCase({ caseId, openChat, openCase, go }: { caseId: string } & P
   }, [load])
   const showMoreSteps = useCallback(() => {
     if (!story) return
-    incidentsApi.get(caseId, { steps_offset: story.steps.length, steps_limit: STEPS_MORE }).then(
-      (res) => setStory((held) => (held ? { ...held, steps: [...held.steps, ...res.data.steps] } : held)),
+    incidentsApi.steps(caseId, { offset: story.steps.length, limit: STEPS_MORE }).then(
+      (res) => {
+        setFailed(null)
+        setStory((held) => {
+          if (!held) return held
+          const shown = new Set(held.steps.map((step) => step.finding_id))
+          return { ...held, steps: [...held.steps, ...res.data.steps.filter((step) => !shown.has(step.finding_id))] }
+        })
+      },
       (err) => setFailed(errorText(err, 'Could not read more of this incident')),
     )
   }, [caseId, story])
-  if (failed) {
+  if (failed && !story) {
     return <EmptyState icon="alert" title={`No incident at ${caseId}`} body={failed} primary={{ label: 'All incidents', onClick: () => go('incident', { search: '' }) }} secondary={{ label: 'Open the case', onClick: () => openCase(caseId) }} />
   }
   if (!story) return <EmptyState loading icon="clock" title="Loading the incident…" />
-  return <StoryView story={story} reload={load} showMoreSteps={showMoreSteps} openChat={openChat} openCase={openCase} />
+  return <StoryView story={story} reload={load} showMoreSteps={showMoreSteps} readFailed={failed} openChat={openChat} openCase={openCase} />
 }
 
 export default function IncidentDetailScreen({ go, openChat, openCase }: ConsoleScreenProps) {

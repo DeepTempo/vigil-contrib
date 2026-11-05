@@ -114,10 +114,9 @@ export interface Story {
   sources: SourceCount[]
   verdict: Verdict
   report: IncidentReport | null
-  /** One page of steps. steps_total counts them all. */
+  /** The first page of steps. steps_total counts them all. */
   steps: Step[]
   steps_total: number
-  steps_offset: number
   reasons: Reason[]
   actions: IncidentAction[]
   entities: StoryEntity[]
@@ -143,6 +142,12 @@ export interface IncidentRow {
   unmatched_steps: number | null
   log_events: number
   pending_approvals: number | null
+}
+
+export interface StepPage {
+  steps: Step[]
+  total: number
+  offset: number
 }
 
 export interface IncidentList {
@@ -179,8 +184,9 @@ export interface AlertTriage {
 }
 
 export const incidentsApi = {
-  list: (params?: { status?: 'open' | 'all'; limit?: number }) => api.get<IncidentList>('/incidents', { params }),
-  get: (caseId: string, params?: { steps_offset?: number; steps_limit?: number }) =>
-    api.get<Story>(`/incidents/${encodeURIComponent(caseId)}`, { params }),
+  list: (params?: { status?: 'open' | 'all'; limit?: number; offset?: number }) => api.get<IncidentList>('/incidents', { params }),
+  get: (caseId: string) => api.get<Story>(`/incidents/${encodeURIComponent(caseId)}`),
+  steps: (caseId: string, params: { offset: number; limit: number }) =>
+    api.get<StepPage>(`/incidents/${encodeURIComponent(caseId)}/steps`, { params }),
   alertTriage: (hours: number) => api.get<AlertTriage>('/alert-triage', { params: { hours } }),
 }

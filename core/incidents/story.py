@@ -234,10 +234,9 @@ class Story(BaseModel):
     sources: list[SourceCount]
     verdict: Verdict
     report: Optional[Report] = None
-    # One page of steps, oldest first. ``alerts`` and ``steps_total`` count them all.
+    # The first page of steps, oldest first. ``alerts`` and ``steps_total`` count them all.
     steps: list[Step]
     steps_total: int
-    steps_offset: int = 0
     reasons: list[Reason]
     actions: list[Action]
     entities: list[Entity]
@@ -248,6 +247,14 @@ class Story(BaseModel):
     log_events: int
     rules_loaded: int
     viewer: Viewer = Field(default_factory=Viewer)
+
+
+class StepPage(BaseModel):
+    """A later page of a story's steps, in the same order."""
+
+    steps: list[Step]
+    total: int
+    offset: int
 
 
 class IncidentRow(BaseModel):
@@ -467,7 +474,7 @@ def _coverage(
     )
 
 
-def _step(finding: FindingFacts, rules: RuleInventory) -> Step:
+def step_of(finding: FindingFacts, rules: RuleInventory) -> Step:
     ranked = rank_by_confidence(
         [{"label": label, "confidence": conf} for label, conf in finding.labels]
     )
@@ -858,11 +865,9 @@ def _entities_to_send(overlap: Sequence[Entity]) -> list[Entity]:
     ]
 
 
-def build_story(
-    facts: StoryFacts, steps_offset: int = 0, steps_limit: int = STEPS_PAGE
-) -> Story:
+def build_story(facts: StoryFacts) -> Story:
     steps = sorted(
-        (_step(finding, facts.rules) for finding in facts.findings),
+        (step_of(finding, facts.rules) for finding in facts.findings),
         key=lambda step: (step.at, step.finding_id),
     )
     unmatched = [s for s in steps if s.coverage is Coverage.NO_RULE]
@@ -881,9 +886,8 @@ def build_story(
         sources=_source_counts(steps),
         verdict=verdict_of(facts),
         report=facts.report,
-        steps=steps[steps_offset : steps_offset + steps_limit],
+        steps=steps[:STEPS_PAGE],
         steps_total=len(steps),
-        steps_offset=steps_offset,
         reasons=[reason for read in _REASONS for reason in read(facts, steps)],
         actions=[_action(a, facts, steps) for a in pending_first],
         entities=_entities_to_send(list(facts.overlap)),
@@ -909,4 +913,4 @@ def build_story(
 
 
 def step_coverage(finding: FindingFacts, rules: RuleInventory) -> Coverage:
-    return _step(finding, rules).coverage
+    return step_of(finding, rules).coverage

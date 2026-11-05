@@ -1,6 +1,6 @@
 """The incident and alert triage routes on real Postgres, with real roles and approvals."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -474,7 +474,6 @@ def test_a_huge_case_answers_one_page_of_steps_and_says_how_many(client, sign_in
     story = answer.json()
     assert story["alerts"] == 5000
     assert story["steps_total"] == 5000
-    assert story["steps_offset"] == 0
     assert len(story["steps"]) == 200
     assert len(answer.content) < 400_000
 
@@ -484,18 +483,93 @@ def test_a_huge_case_answers_one_page_of_steps_and_says_how_many(client, sign_in
     assert story["entities_total"] == 5001
     assert len(story["entities"]) <= 200
 
-    second = client.get(
-        f"/api/incidents/{case_id}", params={"steps_offset": 200, "steps_limit": 50}
-    ).json()
-    assert second["steps_offset"] == 200
-    assert len(second["steps"]) == 50
-    assert second["steps"][0]["finding_id"] == "big-201"
+
+def _fetched_during(work):
+    from sqlalchemy import event
+
+    from core.storage.connection import get_db_manager
+
+    fetched = []
+
+    def count(_conn, cursor, _statement, _params, _context, _many):
+        fetched.append(max(cursor.rowcount, 0))
+
+    engine = get_db_manager().engine
+    event.listen(engine, "after_cursor_execute", count)
+    try:
+        answer = work()
+    finally:
+        event.remove(engine, "after_cursor_execute", count)
+    return answer, sum(fetched)
+
+
+def test_the_next_page_of_steps_is_read_in_the_database(client, sign_in):
+    sign_in("role-admin")
+    case_id = _big_incident()
+    answer, fetched = _fetched_during(
+        lambda: client.get(
+            f"/api/incidents/{case_id}/steps", params={"offset": 200, "limit": 50}
+        )
+    )
+    assert answer.status_code == 200, answer.text
+    page = answer.json()
+    assert (page["total"], page["offset"], len(page["steps"])) == (5000, 200, 50)
+    assert page["steps"][0]["finding_id"] == "big-201"
+    assert fetched < 200
     assert (
         client.get(
-            f"/api/incidents/{case_id}", params={"steps_limit": 100_000}
+            f"/api/incidents/{case_id}/steps", params={"limit": 100_000}
         ).status_code
         == 422
     )
+
+
+def test_steps_page_in_the_order_the_story_tells_them(client, sign_in):
+    sign_in("role-admin")
+    case_id = add_incident(findings=("f-3", "f-1", "f-2", "f-4"))
+    with unit_of_work() as session:
+        session.get(Finding, "f-4").timestamp = None
+        session.get(Finding, "f-4").created_at = datetime(2020, 1, 1)
+    story = client.get(f"/api/incidents/{case_id}").json()
+    pages = [
+        step
+        for offset in range(4)
+        for step in client.get(
+            f"/api/incidents/{case_id}/steps", params={"offset": offset, "limit": 1}
+        ).json()["steps"]
+    ]
+    assert pages == story["steps"]
+
+
+def test_the_steps_of_something_that_is_not_an_incident_answer_like_its_story(
+    client, sign_in
+):
+    sign_in("role-admin")
+    case_id = add_incident(findings=("only-one",))
+    assert client.get(f"/api/incidents/{case_id}/steps").status_code == 404
+    assert client.get("/api/incidents/case-nothing/steps").status_code == 404
+
+
+def test_the_steps_need_the_same_read_as_the_story(client, sign_in):
+    case_id = add_incident()
+    sign_in(NOBODY)
+    answer = client.get(f"/api/incidents/{case_id}/steps")
+    assert answer.status_code == 404
+    assert answer.json()["detail"] == "Not found"
+
+
+def test_the_list_pages_with_an_offset_and_keeps_its_total(client, sign_in):
+    sign_in("role-admin")
+    for n in range(3):
+        add_incident(f"case-page-{n}", findings=(f"p{n}-1", f"p{n}-2"))
+    first = client.get("/api/incidents", params={"limit": 2, "status": "all"}).json()
+    rest = client.get(
+        "/api/incidents", params={"limit": 2, "offset": 2, "status": "all"}
+    ).json()
+    assert (first["total"], rest["total"]) == (3, 3)
+    assert len(first["items"]) == 2 and len(rest["items"]) == 1
+    seen = {row["case_id"] for row in first["items"] + rest["items"]}
+    assert seen == {"case-page-0", "case-page-1", "case-page-2"}
 
 
 def test_the_list_does_not_read_each_alert_of_a_huge_case(client, sign_in):

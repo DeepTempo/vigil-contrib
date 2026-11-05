@@ -16,7 +16,6 @@ from core.config import get_integration_config, is_demo_mode, is_integration_ena
 from core.incidents.story import (
     MIN_FINDINGS,
     RULE_KEYS,
-    STEPS_PAGE,
     UNUSUAL_SCORE,
     CaseFacts,
     ClosureFacts,
@@ -31,12 +30,14 @@ from core.incidents.story import (
     Report,
     RuleInventory,
     SourceCount,
+    StepPage,
     Story,
     StoryFacts,
     Viewer,
     build_story,
     entity_overlap,
     step_coverage,
+    step_of,
     verdict_of,
 )
 from core.response.approval_service import (
@@ -99,25 +100,28 @@ def _labels_of(session, finding_ids) -> Dict[str, List[Tuple[str, Optional[float
     return labels
 
 
+def _in_case(case_id: str):
+    return select(case_findings.c.finding_id).where(case_findings.c.case_id == case_id)
+
+
+# The columns a story reads, so a large case does not load each alert's whole row.
+_FINDING_FACTS = select(
+    Finding.finding_id,
+    Finding.created_at,
+    Finding.data_source,
+    Finding.title,
+    Finding.description,
+    Finding.severity,
+    Finding.timestamp,
+    Finding.anomaly_score,
+    Finding.entity_context,
+)
+
+
 def _case_finding_facts(session, case_id: str) -> List[FindingFacts]:
-    """The columns a story reads, so a large case does not load each alert's whole row."""
-    in_case = select(case_findings.c.finding_id).where(
-        case_findings.c.case_id == case_id
-    )
+    in_case = _in_case(case_id)
     labels = _labels_of(session, in_case)
-    rows = session.execute(
-        select(
-            Finding.finding_id,
-            Finding.created_at,
-            Finding.data_source,
-            Finding.title,
-            Finding.description,
-            Finding.severity,
-            Finding.timestamp,
-            Finding.anomaly_score,
-            Finding.entity_context,
-        ).where(Finding.finding_id.in_(in_case))
-    )
+    rows = session.execute(_FINDING_FACTS.where(Finding.finding_id.in_(in_case)))
     return [FindingFacts(*row, labels=labels.get(row.finding_id, ())) for row in rows]
 
 
@@ -360,13 +364,41 @@ def _case_approvals(
     return [a for a in actions if a is not None and case_id in case_ids_for(a)]
 
 
-def read_story(
-    case_id: str,
-    viewer: Viewer,
-    steps_offset: int = 0,
-    steps_limit: int = STEPS_PAGE,
-) -> Optional[Story]:
-    """The story with one page of its steps, or None when no such case. Raises
+def read_steps(case_id: str, offset: int, limit: int) -> Optional[StepPage]:
+    """One page of a story's steps, read in the database in the story's order, or None when
+    no such case. Raises ``NotAnIncident``."""
+    if is_demo_mode():
+        return None
+    with unit_of_work() as session:
+        if session.get(Case, case_id, options=[noload(Case.findings)]) is None:
+            return None
+        in_case = _in_case(case_id)
+        total = session.scalar(select(func.count()).select_from(in_case.subquery()))
+        if total < MIN_FINDINGS:
+            raise NotAnIncident(case_id, total)
+        rows = session.execute(
+            _FINDING_FACTS.where(Finding.finding_id.in_(in_case))
+            .order_by(
+                func.coalesce(Finding.timestamp, Finding.created_at),
+                Finding.finding_id,
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        labels = _labels_of(session, [row.finding_id for row in rows])
+        rules = _rule_inventory(session)
+    return StepPage(
+        steps=[
+            step_of(FindingFacts(*row, labels=labels.get(row.finding_id, ())), rules)
+            for row in rows
+        ],
+        total=total,
+        offset=offset,
+    )
+
+
+def read_story(case_id: str, viewer: Viewer) -> Optional[Story]:
+    """The story with the first page of its steps, or None when no such case. Raises
     ``NotAnIncident``."""
     if is_demo_mode():
         return None
@@ -398,10 +430,12 @@ def read_story(
             install=_install_facts(),
             viewer=viewer,
         )
-    return build_story(facts, steps_offset, steps_limit)
+    return build_story(facts)
 
 
-def list_incidents(*, open_only: bool, limit: int, viewer: Viewer) -> IncidentList:
+def list_incidents(
+    *, open_only: bool, limit: int, offset: int = 0, viewer: Viewer
+) -> IncidentList:
     """Newest activity first. Each row is projected from the case's own story."""
     if is_demo_mode():
         return IncidentList(total=0, items=[])
@@ -426,6 +460,7 @@ def list_incidents(*, open_only: bool, limit: int, viewer: Viewer) -> IncidentLi
             .options(noload(Case.findings))
             .filter(*wanted)
             .order_by(Case.updated_at.desc(), Case.case_id.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )

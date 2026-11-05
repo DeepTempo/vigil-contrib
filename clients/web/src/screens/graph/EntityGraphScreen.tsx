@@ -120,7 +120,10 @@ function limitsOf(g: EntityGraph): string[] {
   const out: string[] = []
   const { coverage: c, rows, truncated } = g
   if (rows.capped > 0) {
-    out.push(`Showing the newest ${rows.cap.toLocaleString()} of ${(rows.read + rows.capped).toLocaleString()} flow events in this window. Narrow the window to see the rest.`)
+    const advice = g.window.hours > WINDOWS[0].hours
+      ? 'Narrow the window to see the rest.'
+      : 'This is the shortest window offered, so the rest are not drawn. Logs can search them.'
+    out.push(`Showing the newest ${rows.cap.toLocaleString()} of ${(rows.read + rows.capped).toLocaleString()} flow events in this window. ${advice}`)
   }
   if (truncated.edges > 0) {
     out.push(`${truncated.edges.toLocaleString()} links are not drawn. The ones kept are those behind a finding or between this case's entities, then the busiest.`)

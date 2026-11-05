@@ -4387,6 +4387,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/incidents/{case_id}/steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Incident Steps */
+        get: operations["get_api_incidents_case_id_steps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/ingest-string": {
         parameters: {
             query?: never;
@@ -11588,6 +11605,16 @@ export interface components {
             /** Max Cost Usd */
             max_cost_usd: number;
         };
+        /** PromoteRequest */
+        PromoteRequest: {
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Window Hours */
+            window_hours?: number | null;
+        };
         /**
          * ProposalState
          * @enum {string}
@@ -11691,10 +11718,10 @@ export interface components {
             /** Event Ids */
             event_ids?: string[] | null;
             /**
-             * Window Days
-             * @default 30
+             * Window Hours
+             * @default 720
              */
-            window_days: number;
+            window_hours: number;
         };
         /** Report */
         Report: {
@@ -12361,6 +12388,18 @@ export interface components {
             source: string;
             technique?: components["schemas"]["Technique"] | null;
         };
+        /**
+         * StepPage
+         * @description A later page of a story's steps, in the same order.
+         */
+        StepPage: {
+            /** Offset */
+            offset: number;
+            /** Steps */
+            steps: components["schemas"]["Step"][];
+            /** Total */
+            total: number;
+        };
         /** Story */
         Story: {
             /** Actions */
@@ -12395,11 +12434,6 @@ export interface components {
             status: string;
             /** Steps */
             steps: components["schemas"]["Step"][];
-            /**
-             * Steps Offset
-             * @default 0
-             */
-            steps_offset: number;
             /** Steps Total */
             steps_total: number;
             /** Summary */
@@ -19662,7 +19696,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ReasonRequest"];
+                "application/json": components["schemas"]["PromoteRequest"];
             };
         };
         responses: {
@@ -19799,7 +19833,9 @@ export interface operations {
     };
     "get_api_detection-engineering_proposals_proposal_id_shadow-report": {
         parameters: {
-            query?: never;
+            query?: {
+                window_hours?: number | null;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -21139,6 +21175,7 @@ export interface operations {
             query?: {
                 status?: "open" | "all";
                 limit?: number;
+                offset?: number;
             };
             header?: {
                 authorization?: string | null;
@@ -21170,10 +21207,7 @@ export interface operations {
     };
     get_api_incidents_case_id: {
         parameters: {
-            query?: {
-                steps_offset?: number;
-                steps_limit?: number;
-            };
+            query?: never;
             header?: {
                 authorization?: string | null;
             };
@@ -21191,6 +21225,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Story"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_incidents_case_id_steps: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPage"];
                 };
             };
             /** @description Validation Error */
