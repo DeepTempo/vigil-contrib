@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from redis.exceptions import RedisError
 
+from core.autonomy.policy import close_if_adopted
 from core.coldstart import active
 from core.coldstart.baseline import Assessment, alert_from_finding, assess
 from core.findings.exclusions import cached_active_ips, excluded_ips_of
@@ -429,6 +430,7 @@ class FindingProcessor:
         is capped by the semaphore and short-circuited by the breaker; response
         evaluation always runs on whatever severity we have."""
         finding_id = finding.get("finding_id", "unknown")
+        source_severity = finding.get("severity")
 
         want_llm = self.config.auto_triage_enabled or self.config.auto_enrich_enabled
         if want_llm and time.monotonic() >= self._enrich_paused_until:
@@ -472,12 +474,42 @@ class FindingProcessor:
         if finding.get("data_source") == PROBE_DATA_SOURCE:
             return
 
+        if await self._closed_by_kind_policy(finding, source_severity):
+            return
+
         # Response evaluation always runs — even when enrichment is off or paused.
         try:
             await self._evaluate_for_response(finding)
         except Exception as e:
             logger.error(f"Response evaluation failed for {finding_id}: {e}")
             self.stats["errors"] += 1
+
+    async def _closed_by_kind_policy(
+        self, finding: Dict[str, Any], source_severity: Any
+    ) -> bool:
+        """Whether a person's adopted policy just closed this alert as noise. Any failure
+        leaves it in the queue, and with no data service nothing is closed."""
+        if not self._data_service:
+            return False
+        try:
+            policy_id = await asyncio.to_thread(
+                close_if_adopted, finding, source_severity
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Kind policy check failed for %s, leaving it in the queue: %s",
+                finding.get("finding_id"),
+                type(e).__name__,
+            )
+            return False
+        if policy_id is None:
+            return False
+        logger.info(
+            "Closed %s as noise under kind policy %s",
+            finding.get("finding_id"),
+            policy_id,
+        )
+        return True
 
     def _note_enrich_failure(self, finding_id: str) -> None:
         """Trip the breaker after a run of enrichment failures."""

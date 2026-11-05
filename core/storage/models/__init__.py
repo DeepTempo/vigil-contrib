@@ -77,6 +77,12 @@ from core.storage.models.episodic import (
 )
 from core.storage.models.exclusion import IpExclusion
 from core.storage.models.finding import Finding, FindingMitrePrediction
+from core.storage.models.kind_policy import (
+    InvalidPolicyMove,
+    KindPolicy,
+    KindPolicyEvent,
+    PolicyMode,
+)
 from core.storage.models.log_event import LOG_SEVERITIES, LogEvent
 from core.storage.models.medic import MedicLastSeen
 from core.storage.models.skill import SkillRead
@@ -179,4 +185,8 @@ __all__ = [
     "DetectionProposalEvent",
     "InvalidProposalMove",
     "ProposalState",
+    "InvalidPolicyMove",
+    "KindPolicy",
+    "KindPolicyEvent",
+    "PolicyMode",
 ]

@@ -3337,6 +3337,66 @@
   "nullable": true,
   "type": "character varying(100)"
  },
+ "column kind_policies.mode": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(8)"
+ },
+ "column kind_policies.signature": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column kind_policies.updated_at": {
+  "default": "now()",
+  "nullable": false,
+  "type": "timestamp with time zone"
+ },
+ "column kind_policy_events.actor": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column kind_policy_events.at": {
+  "default": "now()",
+  "nullable": false,
+  "type": "timestamp with time zone"
+ },
+ "column kind_policy_events.clean_labels": {
+  "default": null,
+  "nullable": false,
+  "type": "integer"
+ },
+ "column kind_policy_events.evidence": {
+  "default": null,
+  "nullable": false,
+  "type": "jsonb"
+ },
+ "column kind_policy_events.from_mode": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(8)"
+ },
+ "column kind_policy_events.id": {
+  "default": "nextval('kind_policy_events_id_seq'::regclass)",
+  "nullable": false,
+  "type": "bigint"
+ },
+ "column kind_policy_events.reason": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column kind_policy_events.signature": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column kind_policy_events.to_mode": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(8)"
+ },
  "column llm_interaction_logs.agent_id": {
   "default": null,
   "nullable": true,
@@ -4593,6 +4653,16 @@
  "constraint ip_exclusions.ck_ip_exclusions_origin": "CHECK (((origin)::text = ANY ((ARRAY['ad_hoc'::character varying, 'finding'::character varying, 'case'::character varying, 'run'::character varying])::text[])))",
  "constraint ip_exclusions.ck_ip_exclusions_removal": "CHECK (((removed_at IS NULL) = (removed_by IS NULL)))",
  "constraint ip_exclusions.ip_exclusions_pkey": "PRIMARY KEY (exclusion_id)",
+ "constraint kind_policies.kind_policies_mode_check": "CHECK (((mode)::text = ANY ((ARRAY['ask'::character varying, 'close'::character varying])::text[])))",
+ "constraint kind_policies.kind_policies_pkey": "PRIMARY KEY (signature)",
+ "constraint kind_policy_events.kind_policy_events_actor_check": "CHECK ((actor <> ''::text))",
+ "constraint kind_policy_events.kind_policy_events_adopt_bar_check": "CHECK (((clean_labels >= 0) AND (((to_mode)::text <> 'close'::text) OR (clean_labels >= 59))))",
+ "constraint kind_policy_events.kind_policy_events_evidence_check": "CHECK (((jsonb_typeof(evidence) = 'object'::text) AND (evidence <> '{}'::jsonb)))",
+ "constraint kind_policy_events.kind_policy_events_from_mode_check": "CHECK (((from_mode)::text = ANY ((ARRAY['ask'::character varying, 'close'::character varying])::text[])))",
+ "constraint kind_policy_events.kind_policy_events_pkey": "PRIMARY KEY (id)",
+ "constraint kind_policy_events.kind_policy_events_reason_check": "CHECK ((reason <> ''::text))",
+ "constraint kind_policy_events.kind_policy_events_signature_fkey": "FOREIGN KEY (signature) REFERENCES kind_policies(signature)",
+ "constraint kind_policy_events.kind_policy_events_to_mode_check": "CHECK (((to_mode)::text = ANY ((ARRAY['ask'::character varying, 'close'::character varying])::text[])))",
  "constraint llm_interaction_logs.llm_interaction_logs_interaction_id_key": "UNIQUE (interaction_id)",
  "constraint llm_interaction_logs.llm_interaction_logs_pkey": "PRIMARY KEY (id)",
  "constraint llm_provider_configs.llm_provider_configs_pkey": "PRIMARY KEY (provider_id)",
@@ -4947,6 +5017,7 @@
  "index idx_investigation_status": "CREATE INDEX idx_investigation_status ON public.investigations USING btree (status)",
  "index idx_investigation_workflow_id": "CREATE INDEX idx_investigation_workflow_id ON public.investigations USING btree (workflow_id)",
  "index idx_ip_exclusions_created_at": "CREATE INDEX idx_ip_exclusions_created_at ON public.ip_exclusions USING btree (created_at DESC)",
+ "index idx_kind_policy_events_signature": "CREATE INDEX idx_kind_policy_events_signature ON public.kind_policy_events USING btree (signature, id)",
  "index idx_llm_interaction_agent": "CREATE INDEX idx_llm_interaction_agent ON public.llm_interaction_logs USING btree (agent_id)",
  "index idx_llm_interaction_created": "CREATE INDEX idx_llm_interaction_created ON public.llm_interaction_logs USING btree (created_at)",
  "index idx_llm_interaction_investigation": "CREATE INDEX idx_llm_interaction_investigation ON public.llm_interaction_logs USING btree (investigation_id)",
@@ -4995,6 +5066,8 @@
  "index ix_log_events_case_id": "CREATE INDEX ix_log_events_case_id ON public.log_events USING btree (case_id)",
  "index ix_log_events_source_time": "CREATE INDEX ix_log_events_source_time ON public.log_events USING btree (source, \"time\")",
  "index ix_log_events_time": "CREATE INDEX ix_log_events_time ON public.log_events USING btree (\"time\")",
+ "index kind_policies_pkey": "CREATE UNIQUE INDEX kind_policies_pkey ON public.kind_policies USING btree (signature)",
+ "index kind_policy_events_pkey": "CREATE UNIQUE INDEX kind_policy_events_pkey ON public.kind_policy_events USING btree (id)",
  "index llm_interaction_logs_interaction_id_key": "CREATE UNIQUE INDEX llm_interaction_logs_interaction_id_key ON public.llm_interaction_logs USING btree (interaction_id)",
  "index llm_interaction_logs_pkey": "CREATE UNIQUE INDEX llm_interaction_logs_pkey ON public.llm_interaction_logs USING btree (id)",
  "index llm_provider_configs_pkey": "CREATE UNIQUE INDEX llm_provider_configs_pkey ON public.llm_provider_configs USING btree (provider_id)",
@@ -6716,6 +6789,63 @@
    false
   ],
   "sequence": null
+ },
+ "relation kind_policies": {
+  "acl": [
+   "app:INSERT",
+   "app:SELECT",
+   "app:UPDATE",
+   "owner:DELETE",
+   "owner:INSERT",
+   "owner:REFERENCES",
+   "owner:SELECT",
+   "owner:TRIGGER",
+   "owner:TRUNCATE",
+   "owner:UPDATE"
+  ],
+  "kind": "r",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": null
+ },
+ "relation kind_policy_events": {
+  "acl": [
+   "app:INSERT",
+   "app:SELECT",
+   "owner:DELETE",
+   "owner:INSERT",
+   "owner:REFERENCES",
+   "owner:SELECT",
+   "owner:TRIGGER",
+   "owner:TRUNCATE",
+   "owner:UPDATE"
+  ],
+  "kind": "r",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": null
+ },
+ "relation kind_policy_events_id_seq": {
+  "acl": [
+   "app:SELECT",
+   "app:USAGE",
+   "owner:SELECT",
+   "owner:UPDATE",
+   "owner:USAGE"
+  ],
+  "kind": "S",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": "[\"bigint\", 1, 1, 1, 9223372036854775807, 1, false]"
  },
  "relation llm_interaction_logs": {
   "acl": [
