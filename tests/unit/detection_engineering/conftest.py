@@ -86,6 +86,7 @@ def db():
             session.execute(text("DELETE FROM detection_proposals"))
             session.execute(text("DELETE FROM log_events"))
             session.execute(text("DELETE FROM detection_rule_stages"))
+            session.execute(text("DELETE FROM detection_rule_check_changes"))
             session.execute(text("DELETE FROM detection_rule_versions"))
             session.execute(text("DELETE FROM detection_rules"))
             session.execute(text("DELETE FROM finding_mitre_predictions"))

@@ -182,7 +182,10 @@ export interface RuleRow {
 }
 
 export interface RulesReport {
+  /** Rows, one per stored copy. */
   total: number
+  /** Rules, each counted once however many SIEM copies it has. */
+  rule_total: number
   mapped: number
   validated: number
   counts: Record<RuleHealth, number>

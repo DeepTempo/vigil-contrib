@@ -257,7 +257,7 @@ function RulesSection({ openProposal, goSettings, reloadCoverage }: { openPropos
   return (
     <div className="de-split">
       <div style={{ display: 'grid', gap: 10 }}>
-        <Stat value={report.total} label="rules in the inventory" />
+        <Stat value={report.rule_total} label={report.total > report.rule_total ? `rules in the inventory, stored as ${report.total} copies` : 'rules in the inventory'} />
         <Stat value={report.mapped} label="declare an ATT&CK technique" />
         <Stat value={report.validated} label="validated by replay" />
         <div className="x1-card x1-saved">

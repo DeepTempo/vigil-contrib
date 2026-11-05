@@ -15,6 +15,7 @@ from core.detections.engineering import proposals, sigma_text
 from core.detections.engineering.replay import logged_fields
 from core.detections.gaps import read_alert_labels
 from core.detections.inventory import catalog
+from core.detections.inventory.readers import OVERLAY_SOURCE
 from core.detections.reconstruction import (
     _entities_from_step,
     _has_entity,
@@ -125,6 +126,36 @@ def _active_rules(session: Session) -> Dict[str, Set[int]]:
     return by_technique
 
 
+def _rule_of_copy(session: Session) -> Dict[int, Tuple[Any, ...]]:
+    """Which rule each stored copy belongs to, so one rule's copies count once.
+
+    A linked SIEM copy belongs to its origin. The overlay saves one rule's copies under one name.
+    """
+    rows = session.execute(
+        select(
+            DetectionRule.id,
+            DetectionRule.source,
+            DetectionRule.name,
+            DetectionRule.origin_rule_id,
+            DetectionRule.link_kind,
+        )
+    ).all()
+    own = {
+        row.id: (
+            (OVERLAY_SOURCE, row.name) if row.source == OVERLAY_SOURCE else (row.id,)
+        )
+        for row in rows
+    }
+    return {
+        row.id: (
+            own[row.origin_rule_id]
+            if row.origin_rule_id is not None and row.link_kind != "declined"
+            else own[row.id]
+        )
+        for row in rows
+    }
+
+
 def _rule_tactics(session: Session) -> Dict[str, str]:
     """A technique's tactic where a rule declares exactly one, for ids the lookup lacks."""
     out: Dict[str, str] = {}
@@ -199,11 +230,10 @@ def coverage() -> Dict[str, Any]:
         declared = _rule_tactics(session)
         seen = _seen(session)
         open_by_technique = _open_proposals(session)
-        rule_total = session.scalar(
-            select(func.count())
-            .select_from(DetectionRule)
-            .where(DetectionRule.status == "active")
-        )
+        rule_of = _rule_of_copy(session)
+        active = session.scalars(
+            select(DetectionRule.id).where(DetectionRule.status == "active")
+        ).all()
     priorities = set(model["priority_techniques"])
     siem_checks = catalog.siem_checks_by_technique()
     validated_by_rule = {row["rule_id"]: row for row in proven}
@@ -222,7 +252,7 @@ def coverage() -> Dict[str, Any]:
                 "name": name,
                 "tactic": tactic,
                 "state": state,
-                "rules": len(rule_ids),
+                "rules": len({rule_of[i] for i in rule_ids}),
                 "rules_failing_checks": (siem_checks.get(technique) or {}).get(
                     "failing", 0
                 ),
@@ -237,7 +267,7 @@ def coverage() -> Dict[str, Any]:
         "techniques": rows,
         "tactics": tactics,
         "summary": _summary(rows, priorities),
-        "rule_total": rule_total or 0,
+        "rule_total": len({rule_of[i] for i in active}),
     }
 
 
@@ -308,6 +338,7 @@ def rule_health() -> Dict[str, Any]:
     with unit_of_work() as session:
         logged = logged_fields(session)
         fires = _fires(session)
+        rule_of = _rule_of_copy(session)
         rows = session.execute(
             select(
                 DetectionRule, DetectionRuleVersion.content, DetectionRuleVersion.checks
@@ -322,9 +353,10 @@ def rule_health() -> Dict[str, Any]:
         ).all()
         listed = []
         counts = dict.fromkeys(_HEALTH_ORDER, 0)
-        mapped = 0
+        mapped = set()
         for rule, content, checks in rows:
-            mapped += bool(rule.techniques)
+            if rule.techniques:
+                mapped.add(rule_of[rule.id])
             missing = None
             if rule.language == "sigma" and logged is not None:
                 read = sigma_text.fields_read(content or {})
@@ -353,9 +385,10 @@ def rule_health() -> Dict[str, Any]:
     listed.sort(key=lambda row: (_HEALTH_ORDER.index(row["health"]), row["rule_id"]))
     return {
         "total": len(listed),
-        "mapped": mapped,
+        "rule_total": len({rule_of[row["rule_id"]] for row in listed}),
+        "mapped": len(mapped),
         "counts": counts,
-        "validated": sum(1 for row in listed if row["validated"]),
+        "validated": len({rule_of[r["rule_id"]] for r in listed if r["validated"]}),
         "rules": listed[:RULE_ROWS],
         "fires_window_days": FIRES_WINDOW_DAYS,
         "fields_known": logged is not None,

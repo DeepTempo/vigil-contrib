@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import text
 
+from core.detections.inventory.readers import OVERLAY_SOURCE
 from core.detections.inventory.record import RuleRecord
 from core.detections.inventory.sync import sync_source
 from core.storage.unit_of_work import unit_of_work
@@ -99,6 +100,32 @@ def test_a_rule_goes_from_paste_to_live_and_only_proof_changes_the_map(
     actors = {e["actor"] for e in view["events"]}
     assert actors == {"de-admin"}
     _post(client, f"/proposals/{pid}/reject", {"reason": "no"}, status=409)
+
+
+def test_one_rules_copies_count_as_one_rule(client, admin):
+    technique = "T1059.001"
+    sync_source(
+        OVERLAY_SOURCE,
+        [
+            _rule("sigma-copy", "Encoded PowerShell", [technique]),
+            _rule("splunk-copy", "Encoded PowerShell", [technique], language="splunk"),
+        ],
+    )
+    # In a SIEM's own inventory a repeated name is two rules.
+    sync_source(
+        "wazuh",
+        [
+            _rule("100", "Repeated name", [technique], language="wazuh"),
+            _rule("101", "Repeated name", [technique], language="wazuh"),
+        ],
+    )
+
+    coverage = _get(client, "/coverage")
+    assert _state(coverage, technique)["rules"] == 3
+    assert coverage["rule_total"] == 3
+    rules = _get(client, "/rules")
+    assert rules["rule_total"] == 3 and rules["mapped"] == 3
+    assert rules["total"] == 4
 
 
 def test_an_illegal_move_is_a_409_and_an_unknown_proposal_a_404(client, admin):
