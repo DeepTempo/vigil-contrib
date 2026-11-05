@@ -530,7 +530,6 @@ def test_words_around_embedded_json_stay_and_it_stays_json():
         "[INFO] nothing here",
         "a {broken json",
         "[" * 100_000,
-        '{"a":' * 10_000,
     ],
 )
 def test_text_with_no_credential_stays_byte_for_byte(message):
@@ -603,3 +602,45 @@ def test_a_connector_detection_row_takes_its_created_timestamp_as_its_time():
 def test_a_created_timestamp_alone_does_not_make_a_row_an_event():
     with pytest.raises(Dropped):
         event({"created_timestamp": AT.isoformat(), "msg": "a record, not an event"})
+
+
+def test_json_past_the_try_budget_is_replaced_not_left_to_the_regex():
+    message = "{} " * 64 + json.dumps({"access_token": {"value": LEAKED}})
+    notes = Counter()
+    stored = _stored({"message": message}, notes)
+    assert stored["raw"]["message"] == TOO_LARGE_TO_CHECK
+    assert LEAKED not in stored["summary"]
+    assert LEAKED not in stored["search_text"]
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1})
+
+
+@pytest.mark.parametrize("wrappers", [4, 5])
+def test_json_past_the_depth_budget_is_replaced_not_left_to_the_regex(wrappers):
+    message = json.dumps({"access_token": {"value": LEAKED}})
+    for _ in range(wrappers):
+        message = json.dumps({"wrapped": message})
+    notes = Counter()
+    stored = _stored({"message": message}, notes)
+    assert LEAKED not in str(stored["raw"])
+    assert LEAKED not in stored["summary"]
+    assert LEAKED not in stored["search_text"]
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1})
+
+
+def test_an_escaped_credential_name_past_the_try_budget_does_not_survive():
+    message = "{} " * 64 + '{"pass\\u0077ord": "' + LEAKED + '"}'
+    stored = _stored({"message": message})
+    assert LEAKED not in str(stored["raw"])
+
+
+def test_json_that_will_not_parse_past_the_try_budget_is_replaced():
+    message = '{"a":' * 10_000 + '{"access_token": {"value": "' + LEAKED + '"}}'
+    stored = _stored({"message": message})
+    assert stored["raw"]["message"] == TOO_LARGE_TO_CHECK
+
+
+def test_many_brackets_in_plain_text_are_not_taken_for_json():
+    message = "[INFO] [worker-1] " * 100
+    notes = Counter()
+    assert _stored({"message": message}, notes)["raw"]["message"] == message
+    assert notes == Counter()

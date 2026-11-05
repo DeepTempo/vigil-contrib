@@ -679,11 +679,11 @@ def _names_a_credential(key: str) -> bool:
 
 def _redact_embedded_json(text: str, depth: int) -> str:
     """``text`` with each JSON object or array in it redacted as data. A value with nothing to
-    redact keeps its exact bytes. Past these bounds, ``_CREDENTIAL_IN_TEXT`` still reads it, and
-    ``_with_large_json_replaced`` has already taken any string too long to parse that holds JSON.
+    redact keeps its exact bytes. JSON past these bounds goes unread, and text it held cannot be
+    known safe, so the marker replaces it.
     """
     if depth >= MAX_EMBEDDED_JSON_DEPTH or len(text) > MAX_EMBEDDED_JSON_CHARS:
-        return text
+        return TOO_LARGE_TO_CHECK if _LOOKS_LIKE_JSON.search(text) else text
     pieces: List[str] = []
     copied = 0
     at = 0
@@ -702,6 +702,9 @@ def _redact_embedded_json(text: str, depth: int) -> str:
         if clean != value:
             pieces += [text[copied:start], json.dumps(clean, ensure_ascii=False)]
             copied = end
+    else:
+        if _LOOKS_LIKE_JSON.search(text, at):
+            return TOO_LARGE_TO_CHECK
     return "".join([*pieces, text[copied:]])
 
 
@@ -907,7 +910,9 @@ def normalize(
     if checkable != cleaned:
         notes[NOTE_JSON_TOO_LARGE] += 1
     raw = _redacted(checkable)
-    if raw != checkable:
+    if str(raw).count(TOO_LARGE_TO_CHECK) > str(checkable).count(TOO_LARGE_TO_CHECK):
+        notes[NOTE_JSON_TOO_LARGE] += 1
+    elif raw != checkable:
         notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)
