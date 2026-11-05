@@ -366,7 +366,7 @@ def test_credentials_are_found_at_any_depth_and_inside_text():
     assert "--user bob" in stored["raw"]["command"]
 
 
-SECRET = "sensitive-value"
+LEAKED = "sensitive-value"
 
 
 @pytest.mark.parametrize(
@@ -383,9 +383,9 @@ SECRET = "sensitive-value"
 def test_a_credential_in_json_inside_a_string_is_gone_from_everything_stored(message):
     notes = Counter()
     stored = _stored({"message": message}, notes)
-    assert SECRET not in str(stored["raw"])
-    assert SECRET not in stored["summary"]
-    assert SECRET not in stored["search_text"]
+    assert LEAKED not in str(stored["raw"])
+    assert LEAKED not in stored["summary"]
+    assert LEAKED not in stored["search_text"]
     assert "[redacted]" in stored["raw"]["message"]
     assert "redacted" in stored["tags"]
     assert notes[NOTE_REDACTED] == 1
@@ -417,7 +417,7 @@ def test_text_with_no_credential_stays_byte_for_byte(message):
 def test_past_the_size_bound_a_quoted_credential_is_still_found_in_the_text():
     message = '{"password":"sensitive-value","pad":"' + "x" * 300_000 + '"}'
     stored = _stored({"message": message})
-    assert SECRET not in str(stored["raw"])
+    assert LEAKED not in str(stored["raw"])
 
 
 def test_past_the_depth_bound_nothing_breaks():

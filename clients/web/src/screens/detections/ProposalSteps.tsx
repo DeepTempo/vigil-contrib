@@ -509,7 +509,7 @@ function ShadowStep({ proposal, canWrite, busy, run }: StepProps) {
   const report = useShadowReport(proposal)
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <Note>Shadow is a stage in Vigil&apos;s overlay, not a query running in your SIEM. Vigil measures it by running the rule over rows stored since it entered shadow.</Note>
+      <Note>Shadow is a stage in Vigil&apos;s overlay, not a query running in your SIEM. Vigil measures it by running the rule over rows stored since it entered shadow. With Elasticsearch connected, Vigil also runs the Elastic copy there on logs-*, read only, and counts its hits.</Note>
       {proposal.state === 'converted' && canWrite && (
         <StageAction label="Move to shadow" id={proposal.proposal_id} busy={busy} run={run} action={detectionsApi.shadow} then="shadow" requireReason={false}
           note="Saves the rule's copies into Vigil's overlay, at the shadow stage. It needs you signed in as a person." />
@@ -528,7 +528,7 @@ function LiveStep({ proposal, canWrite, busy, run }: StepProps) {
   const live = proposal.latest.live
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM, so loading and enabling it there stays with you. A staged rollout to a small group of hosts does not exist.</Note>
+      <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM, so loading and enabling it there stays with you. With Elasticsearch connected, Vigil runs the live Elastic copy itself and its hits become findings, and it moves a noisy copy back to shadow. A staged rollout to a small group of hosts does not exist.</Note>
       {live && <div className="x1-card" data-testid="de-live">Promoted by <b>{live.actor}</b>, {when(live.at)}. {live.reason}</div>}
       {proposal.state === 'shadow' && <ShadowReportCard report={report} />}
       {proposal.state === 'shadow' && canWrite && (report?.truncated || windowHours != null) && <ShadowWindow windowHours={windowHours} choose={setWindowHours} />}

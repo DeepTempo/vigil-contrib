@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 INTEGRATION = ELASTIC.id
 LANGUAGES = ("eql", "esql", "lucene")
+# On a copy's [rule] table: a person takes it from shadow to live, never the sweep.
+PERSON_PROMOTES = "person_promotes"
 FIRST_WINDOW = timedelta(hours=1)
 MAX_DOCS = 100  # documents fetched per run; the count is the full total
 SAMPLE = 3
@@ -440,6 +442,8 @@ def _due(
                 f"{failures} failed runs in a row",
                 {"failures": failures, "last_reason": runs.get("reason")},
             )
+        if copy.rule.get(PERSON_PROMOTES):
+            return None
         if now - copy.stage_at < timedelta(days=SHADOW_DAYS):
             return None
         week = _week(now)

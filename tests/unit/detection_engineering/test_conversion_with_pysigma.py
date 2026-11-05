@@ -2,6 +2,7 @@
 
 import json
 import tomllib
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -86,6 +87,41 @@ def test_converted_queries_build_copies_the_overlay_reader_accepts():
     assert elastic.techniques == ["T1059.001"]
     assert tomllib.loads(elastic_text)["rule"]["language"] == "lucene"
     assert splunk.native_key != elastic.native_key != DOC["id"]
+
+
+def test_a_converted_elastic_copy_can_be_run_and_only_a_person_takes_it_live():
+    from core.detections.inventory import rollout
+
+    rows = list(_rows("elastic-lucene").values())
+    query, language = targets.overlay_queries(rows)["elastic"]
+    copy = tomllib.loads(package.elastic_copy(DOC, query, language))["rule"]
+    assert rollout.runnable(copy) is None
+
+    now = datetime.now(timezone.utc)
+    week = [(now - timedelta(days=i)).date().isoformat() for i in range(7)]
+    quiet = {
+        "runs": {"days": {day: {"pass": 1, "fail": 0} for day in week}},
+        "shadow": {"days": {}},
+    }
+
+    def due(rule):
+        return rollout._due(
+            None,
+            rollout.Copy(
+                rule_id=1,
+                version=1,
+                name="copy",
+                stage="shadow",
+                stage_at=now - timedelta(days=8),
+                checks=quiet,
+                rule=rule,
+            ),
+            now,
+            0,
+        )
+
+    assert due({})[0] == "live"
+    assert due(copy) is None
 
 
 def test_the_sigma_tree_replays_a_cidr_rule_vigils_evaluator_refuses():

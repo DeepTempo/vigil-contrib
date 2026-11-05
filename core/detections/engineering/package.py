@@ -17,6 +17,8 @@ from typing import Any, Callable, Dict, List, Tuple
 
 import yaml
 
+from core.detections.inventory.rollout import PERSON_PROMOTES
+
 _LEVEL_TO_PANTHER = {
     "informational": "Info",
     "low": "Low",
@@ -275,8 +277,15 @@ def splunk_copy(rule: Dict[str, Any], query: str) -> str:
     )
 
 
+ELASTIC_INDEX = "logs-*"
+
+
 def elastic_copy(rule: Dict[str, Any], query: str, language: str) -> str:
-    """detection-rules TOML. A JSON string is a valid TOML basic string."""
+    """detection-rules TOML. A JSON string is a valid TOML basic string.
+
+    The rollout runs this copy. A person moves a proposal to live, so the copy says the rollout
+    may not.
+    """
     _, techniques = attack_ids(rule)
     level = str(rule.get("level", "medium"))
     lines = [
@@ -286,7 +295,9 @@ def elastic_copy(rule: Dict[str, Any], query: str, language: str) -> str:
         f"description = {json.dumps(str(rule.get('description', '')))}",
         f'type = {json.dumps("esql" if language == "esql" else "query")}',
         f"language = {json.dumps(language)}",
+        *([] if language == "esql" else [f"index = {json.dumps([ELASTIC_INDEX])}"]),
         f"query = {json.dumps(query)}",
+        f"{PERSON_PROMOTES} = true",
         f"severity = {json.dumps(level if level != 'informational' else 'low')}",
         f"risk_score = {_LEVEL_TO_RISK.get(level, 47)}",
     ]
