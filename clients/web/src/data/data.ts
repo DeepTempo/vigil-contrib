@@ -13,6 +13,12 @@ export type ConsoleScreenKey =
   | 'medic'
   | 'settings'
   | 'start'
+  | 'alerts'
+  | 'detections'
+  | 'autonomy'
+  | 'logs'
+  | 'graph'
+  | 'incident'
 
 /** A nav item carrying a gate only renders when the gate is satisfied. */
 export interface NavGate {
@@ -26,6 +32,11 @@ export const NAV: [IconName, string, ConsoleScreenKey, NavGate?][] = [
   ['graph', 'Overview', 'overview'],
   ['clock', 'Triage queue', 'triage'],
   ['play', 'Day one setup', 'start'],
+  ['alert', 'Alert triage', 'alerts'],
+  ['target', 'Detections', 'detections'],
+  ['sparkle', 'Autonomy', 'autonomy'],
+  ['doc', 'Logs', 'logs'],
+  ['globe', 'Entity graph', 'graph'],
   ['grid', 'Findings', 'dashboard'],
   ['folder', 'Cases', 'cases'],
   ['bars', 'Case Metrics', 'metrics'],
@@ -124,4 +135,10 @@ export const TITLES: Record<ConsoleScreenKey, [string, string]> = {
   medic: ['Medic', 'What Medic watches in this install, and the incidents it records'],
   settings: ['Settings', 'Configure Vigil — AI, integrations, users and platform'],
   start: ['Day one setup', 'Build a baseline from the alert history you already have'],
+  alerts: ['Alert triage', 'Each kind of alert, how it is handled, and how that has gone'],
+  detections: ['Detection engineering', 'From a missed attack step to a reviewed rule'],
+  autonomy: ['Autonomy', 'What Vigil may decide on its own, and how it earned that'],
+  logs: ['Logs', 'Every telemetry source in one table and one schema'],
+  graph: ['Entity graph', 'Who talks to whom in the stored logs: roles, gaps and attack paths'],
+  incident: ['Incident', 'A case as one story, with the evidence behind each step'],
 }

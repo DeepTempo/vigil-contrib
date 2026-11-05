@@ -46,6 +46,12 @@ import NotFoundScreen from '../screens/notfound/NotFoundScreen'
 import OverviewScreen from '../screens/overview/OverviewScreen'
 import TriageScreen from '../screens/triage/TriageScreen'
 import StartScreen from '../screens/coldstart/StartScreen'
+import AlertKindsScreen from '../screens/alerttriage/AlertKindsScreen'
+import DetectionEngineeringScreen from '../screens/detections/DetectionEngineeringScreen'
+import AutonomyPolicyScreen from '../screens/autonomy/AutonomyPolicyScreen'
+import LogsScreen from '../screens/logs/LogsScreen'
+import EntityGraphScreen from '../screens/graph/EntityGraphScreen'
+import IncidentDetailScreen from '../screens/incident/IncidentDetailScreen'
 import { VigilLogo } from '../shared/VigilLogo'
 import { leaveUnsaved } from '../shared/unsaved'
 import {
@@ -59,7 +65,7 @@ import {
 } from './statusLine'
 
 // what a collapsed vertical tile shows under its icon, where the full label would not fit
-const TILE_LABELS: Record<string, string> = { start: 'Day one', triage: 'Triage', metrics: 'Metrics', workflows: 'Agents' }
+const TILE_LABELS: Record<string, string> = { start: 'Day one', triage: 'Triage', metrics: 'Metrics', workflows: 'Agents', alerts: 'Alerts', graph: 'Graph' }
 
 const AUTONOMY_ACT = 'Act · reversible changes on its own'
 const AUTONOMY_ASSIST = 'Assist · asks before changes'
@@ -77,6 +83,12 @@ const SCREENS: Record<ConsoleScreenKey, (props: ConsoleScreenProps) => JSX.Eleme
   medic: MedicScreen,
   settings: SettingsScreen,
   start: StartScreen,
+  alerts: AlertKindsScreen,
+  detections: DetectionEngineeringScreen,
+  autonomy: AutonomyPolicyScreen,
+  logs: LogsScreen,
+  graph: EntityGraphScreen,
+  incident: IncidentDetailScreen,
 }
 
 /** What a widened dock leaves of the page beside it. */
