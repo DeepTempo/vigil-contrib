@@ -11,8 +11,9 @@ A SIEM copy may be linked to the repo rule it came from (origin_rule_id); an
 overlay rule counts as a repo rule here. A repo rule's state in a SIEM is its
 linked copies' (disabled, or their Runs result, each beside its Quiet), or
 'not deployed' when it has none there. Every SIEM Vigil reads (Kibana,
-'elastic'; Splunk, 'splunk'; the Wazuh manager, 'wazuh') is listed. Kibana and
-Wazuh rules get a Sees check; a Wazuh rule's data source is its decoder. Kibana
+'elastic'; Splunk, 'splunk'; the Wazuh manager, 'wazuh') is listed. Kibana,
+Wazuh and Splunk rules get a Sees check; a Wazuh rule's data source is its
+decoder, a Splunk search's its index/sourcetype or data model. Kibana
 and Wazuh rules get a Quiet check; only Kibana rules get Noisy and Silent.
 
 A linked Kibana or Splunk copy also carries checks['drift']: fail when it was
@@ -72,10 +73,10 @@ CURRENT_STAGE = (
 LINKED = DetectionRule.link_kind.in_(("same_id", "known_name", "agent"))
 NOT_DEPLOYED = "not deployed"
 NOT_READ = (
-    "Splunk rules get no Sees or Quiet check, and Splunk and Wazuh rules no Noisy "
+    "Splunk rules get no Quiet check, and Splunk and Wazuh rules no Noisy "
     "or Silent check (nor a never-firing count), yet"
 )
-SEES_TOOLS = ("elastic", "wazuh")
+SEES_TOOLS = ("elastic", "wazuh", "splunk")
 QUIET_TOOLS = ("elastic", "wazuh")
 # Noisy, Silent and the never-firing count read a rule's own history.
 HISTORY_TOOLS = ("elastic",)
@@ -757,10 +758,20 @@ def _unknown(reason: str) -> Dict[str, Any]:
 def rule_for_finding(finding: Mapping[str, Any]) -> Dict[str, Any]:
     """The inventory rule and version that fired a finding, or why it is unknown.
 
-    Read from the stored alert (entity_context.source_evidence), never matched
-    on name. The version is the latest one first seen at or before the alert.
-    Only Kibana (source 'elastic') rules resolve today.
+    A finding the overlay runner made names its rule and version
+    (entity_context.detection_rule) and resolves to exactly that. Otherwise read
+    from the stored alert (entity_context.source_evidence), never matched on
+    name; the version is the latest one first seen at or before the alert, and
+    only Kibana (source 'elastic') rules resolve.
     """
+    context = finding.get("entity_context")
+    named = context.get("detection_rule") if isinstance(context, dict) else None
+    if isinstance(named, dict) and named.get("rule_id") and named.get("version"):
+        try:
+            return _resolve_named(int(named["rule_id"]), int(named["version"]))
+        except Exception:  # a finding read must not fail on the inventory
+            logger.exception("Could not resolve rule %s", named)
+            return _unknown("the rule inventory could not be read")
     source = finding.get("data_source")
     if source == "splunk":
         return _unknown("Splunk findings do not name their saved search yet")
@@ -813,15 +824,29 @@ def _resolve(key: str, fired: datetime) -> Dict[str, Any]:
                     else ""
                 )
             )
-        return {
-            "resolved": True,
-            "rule_id": rule.id,
-            "source": rule.source,
-            "native_key": rule.native_key,
-            "name": rule.name,
-            "status": rule.status,
-            "version": version.version,
-            "query": version.query,
-            "first_seen": version.first_seen.isoformat(),
-            "checks": version.checks or {},
-        }
+        return _resolved(rule, version)
+
+
+def _resolve_named(rule_id: int, version: int) -> Dict[str, Any]:
+    """The exact rule and version a finding names (the overlay runner's findings)."""
+    with get_db_manager().session_scope() as session:
+        rule = session.get(DetectionRule, rule_id)
+        row = session.get(DetectionRuleVersion, (rule_id, version)) if rule else None
+        if row is None:
+            return _unknown(f"rule {rule_id} v{version} is not in the inventory")
+        return _resolved(rule, row)
+
+
+def _resolved(rule: DetectionRule, version: DetectionRuleVersion) -> Dict[str, Any]:
+    return {
+        "resolved": True,
+        "rule_id": rule.id,
+        "source": rule.source,
+        "native_key": rule.native_key,
+        "name": rule.name,
+        "status": rule.status,
+        "version": version.version,
+        "query": version.query,
+        "first_seen": version.first_seen.isoformat(),
+        "checks": version.checks or {},
+    }
