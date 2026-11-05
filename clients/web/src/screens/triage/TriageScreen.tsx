@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import IncidentBanner from '../incident/IncidentBanner'
 import { DataTable, type ColumnDef } from '../../shared/DataTable'
 import { Icon } from '../../shared/icons'
 import { usePageSnapshot } from '../../shell/pageSnapshot'
@@ -356,6 +357,7 @@ function WorkDone({ row, openCase }: { row: TriageRow; openCase: (id: string) =>
           </Link>
         )}
         {door && <span>{run || started ? 'Case' : 'Added to'} <CaseDoor id={door} openCase={openCase} /></span>}
+        {door && <Link to={`/incident?case=${encodeURIComponent(door)}`} onClick={(event) => event.stopPropagation()}>Incident view</Link>}
       </div>
     </>
   )
@@ -543,6 +545,7 @@ const TriageScreen: (props: ConsoleScreenProps) => JSX.Element = ({ openCase, se
       </div>
 
       <IntakeBanners autoOpsOff={autoOpsOff} goSettings={goSettings} />
+      <IncidentBanner />
       {phase === 'loading' && <EmptyState loading icon="clock" title="Loading triage…" />}
       {phase === 'error' && (
         <EmptyState error icon="alert" title="Couldn’t load triage" primary={{ label: 'Retry', onClick: load, icon: 'refresh' }} />

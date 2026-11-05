@@ -4010,6 +4010,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Incidents */
+        get: operations["get_api_incidents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/incidents/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Incident */
+        get: operations["get_api_incidents_case_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/ingest-string": {
         parameters: {
             query?: never;
@@ -7710,6 +7744,56 @@ export interface components {
              */
             local_ollama_recovery_retry_limit: number;
         };
+        /** Action */
+        Action: {
+            /** Action Id */
+            action_id: string;
+            /** Action Type */
+            action_type: string;
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Confidence */
+            confidence: number;
+            /** Created At */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Description */
+            description: string;
+            /** Does */
+            does: string;
+            effect: components["schemas"]["ActionEffect"];
+            /** Evidence */
+            evidence?: components["schemas"]["Evidence"][];
+            /** Executed At */
+            executed_at?: string | null;
+            /** Missing */
+            missing?: string | null;
+            /** Reason */
+            reason: string;
+            /** Rejection Reason */
+            rejection_reason?: string | null;
+            /** Result */
+            result?: string | null;
+            /** Reversibility */
+            reversibility: string;
+            /** Status */
+            status: string;
+            /** Target */
+            target: string;
+            /** Title */
+            title: string;
+            /** Workflow Run Id */
+            workflow_run_id?: string | null;
+        };
+        /**
+         * ActionEffect
+         * @description What happens beyond the recorded decision, in this install.
+         * @enum {string}
+         */
+        ActionEffect: "cloudflare" | "no_executor" | "run_resumes" | "record_only";
         /**
          * ActivityAdd
          * @description Add activity to case.
@@ -9127,6 +9211,12 @@ export interface components {
             type: string;
         };
         /**
+         * Coverage
+         * @description Whether a rule stands behind a step.
+         * @enum {string}
+         */
+        Coverage: "rule_fired" | "rule_declared" | "no_rule" | "unknown";
+        /**
          * CreateRoleRequest
          * @description Create a custom role. ``copy_from`` is a preset key or a role id.
          */
@@ -9419,6 +9509,15 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** Entity */
+        Entity: {
+            /** Finding Ids */
+            finding_ids: string[];
+            /** Kind */
+            kind: string;
+            /** Value */
+            value: string;
+        };
         /**
          * EntityContext
          * @description Free-form entity context; ``source_evidence`` is the one named key.
@@ -9461,6 +9560,14 @@ export interface components {
              */
             urgency_level: string;
         };
+        /** Evidence */
+        Evidence: {
+            kind: components["schemas"]["EvidenceKind"];
+            /** Label */
+            label: string;
+            /** Ref */
+            ref: string;
+        };
         /**
          * EvidenceAdd
          * @description Add evidence to case.
@@ -9484,6 +9591,11 @@ export interface components {
             /** Tags */
             tags?: string[] | null;
         };
+        /**
+         * EvidenceKind
+         * @enum {string}
+         */
+        EvidenceKind: "finding" | "log_search" | "approval";
         /** ExclusionCreate */
         ExclusionCreate: {
             /**
@@ -9838,6 +9950,40 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /** IncidentList */
+        IncidentList: {
+            /** Items */
+            items: components["schemas"]["IncidentRow"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * IncidentRow
+         * @description One incident in a list, projected from its ``Story``.
+         */
+        IncidentRow: {
+            /** Alerts */
+            alerts: number;
+            /** Case Id */
+            case_id: string;
+            /** Log Events */
+            log_events: number;
+            /** Opened At */
+            opened_at: string;
+            /** Pending Approvals */
+            pending_approvals?: number | null;
+            /** Priority */
+            priority: string;
+            /** Sources */
+            sources: components["schemas"]["SourceCount"][];
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+            /** Unmatched Steps */
+            unmatched_steps: number;
+            verdict: components["schemas"]["Verdict"];
+        };
         /**
          * IngestionJobStatus
          * @description Snapshot of a background ingestion job.
@@ -9929,6 +10075,23 @@ export interface components {
             integrations: {
                 [key: string]: unknown;
             };
+        };
+        /** IntelItem */
+        IntelItem: {
+            /** Confidence */
+            confidence?: number | null;
+            /** Context */
+            context?: string | null;
+            /** Kind */
+            kind: string;
+            /** Reputation */
+            reputation?: number | null;
+            /** Source */
+            source?: string | null;
+            /** Threat Level */
+            threat_level?: string | null;
+            /** Value */
+            value: string;
         };
         /**
          * IntentDiffRow
@@ -10846,6 +11009,19 @@ export interface components {
             /** Max Cost Usd */
             max_cost_usd: number;
         };
+        /** Reason */
+        Reason: {
+            /** Evidence */
+            evidence: components["schemas"]["Evidence"][];
+            kind: components["schemas"]["ReasonKind"];
+            /** Text */
+            text: string;
+        };
+        /**
+         * ReasonKind
+         * @enum {string}
+         */
+        ReasonKind: "several_sources" | "shared_entity" | "daemon_merge" | "unusual_score" | "technique_chain" | "high_severity" | "flagged_intel" | "log_events" | "person_approved";
         /**
          * RecoveryCodesResponse
          * @description One-time MFA recovery codes (shown once, cannot be retrieved again).
@@ -10897,6 +11073,17 @@ export interface components {
             related_case_id: string;
             /** Relationship Type */
             relationship_type: string;
+        };
+        /** Report */
+        Report: {
+            /** At */
+            at?: string | null;
+            /** Origin */
+            origin: string;
+            /** Ref */
+            ref: string;
+            /** Text */
+            text: string;
         };
         /**
          * ResolutionStepAdd
@@ -11396,6 +11583,13 @@ export interface components {
             /** Version */
             version?: number | null;
         };
+        /** SourceCount */
+        SourceCount: {
+            /** Alerts */
+            alerts: number;
+            /** Source */
+            source: string;
+        };
         /**
          * SourceEvidence
          * @description The envelope ``normalize_source_evidence`` returns.
@@ -11508,6 +11702,69 @@ export interface components {
              */
             status: "running" | "paused";
         };
+        /** Step */
+        Step: {
+            /** Anomaly Score */
+            anomaly_score?: number | null;
+            /** At */
+            at: string;
+            /** Caught By */
+            caught_by?: string | null;
+            coverage: components["schemas"]["Coverage"];
+            /** Coverage Note */
+            coverage_note: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Label */
+            label: string;
+            /** Labels */
+            labels?: string[];
+            /** Other Techniques */
+            other_techniques?: components["schemas"]["Technique"][];
+            /** Severity */
+            severity?: string | null;
+            /** Source */
+            source: string;
+            technique?: components["schemas"]["Technique"] | null;
+        };
+        /** Story */
+        Story: {
+            /** Actions */
+            actions: components["schemas"]["Action"][];
+            /** Alerts */
+            alerts: number;
+            /** Case Id */
+            case_id: string;
+            /** Entities */
+            entities: components["schemas"]["Entity"][];
+            /** Intel */
+            intel: components["schemas"]["IntelItem"][];
+            /** Log Events */
+            log_events: number;
+            /** Opened At */
+            opened_at: string;
+            /** Priority */
+            priority: string;
+            /** Reasons */
+            reasons: components["schemas"]["Reason"][];
+            report?: components["schemas"]["Report"] | null;
+            /** Rules Loaded */
+            rules_loaded: number;
+            /** Sources */
+            sources: components["schemas"]["SourceCount"][];
+            /** Status */
+            status: string;
+            /** Steps */
+            steps: components["schemas"]["Step"][];
+            /** Summary */
+            summary: string;
+            /** Title */
+            title: string;
+            /** Unmatched Steps */
+            unmatched_steps: components["schemas"]["Step"][];
+            verdict: components["schemas"]["Verdict"];
+            viewer?: components["schemas"]["Viewer"];
+        };
         /** SurfaceToggle */
         SurfaceToggle: {
             /** Enabled */
@@ -11557,6 +11814,17 @@ export interface components {
             status?: string | null;
             /** Title */
             title?: string | null;
+        };
+        /** Technique */
+        Technique: {
+            /** Confidence */
+            confidence?: number | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Tactic */
+            tactic?: string | null;
         };
         /**
          * TemplateCreate
@@ -11960,6 +12228,36 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** Verdict */
+        Verdict: {
+            /** Basis */
+            basis: string;
+            /** By */
+            by?: string | null;
+            /** Label */
+            label: string;
+            /** Model Words */
+            model_words?: string | null;
+            value: components["schemas"]["VerdictValue"];
+        };
+        /**
+         * VerdictValue
+         * @enum {string}
+         */
+        VerdictValue: "true_positive" | "false_positive" | "undetermined";
+        /** Viewer */
+        Viewer: {
+            /**
+             * Can Decide
+             * @default false
+             */
+            can_decide: boolean;
+            /**
+             * Can Read Approvals
+             * @default false
+             */
+            can_read_approvals: boolean;
         };
         /**
          * WatcherAdd
@@ -19351,6 +19649,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_api_incidents: {
+        parameters: {
+            query?: {
+                status?: "open" | "all";
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_incidents_case_id: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Story"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

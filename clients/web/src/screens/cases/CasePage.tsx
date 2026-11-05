@@ -1638,6 +1638,9 @@ export function CasePage({
           <span aria-hidden>›</span>
           <span className="mono">{id.startsWith('case-') ? id : `Case ${id}`}</span>
           <div className="dh-crumb-end">
+            <Link className="btn ghost icon" aria-label="Open the incident view" title="Open the incident view" to={`/incident?case=${encodeURIComponent(id)}`}>
+              <Icon name="alert" size={15} />
+            </Link>
             {c && <CaseMenu onEdit={onEdit} onMerge={onMerge} onDelete={canDelete ? onDelete : undefined} />}
             {onExpand && (
               <button type="button" className="btn ghost icon" aria-label="Open as full page" title="Open as full page" onClick={onExpand}>
