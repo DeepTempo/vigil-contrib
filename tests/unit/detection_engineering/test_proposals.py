@@ -579,3 +579,17 @@ def test_an_agents_own_rule_can_change_and_the_sweep_still_promotes_it(db):
     )["saved"][0]
     assert (first["rule_id"], second["version"]) == (second["rule_id"], 2)
     assert _due_after_a_quiet_week(first["rule_id"], {})[0] == "live"
+
+
+def test_an_agent_cannot_strip_a_held_copy_no_proposal_recorded(db):
+    held = AGENT_COPY.replace("[rule]\n", "[rule]\nperson_promotes = true\n", 1)
+    assert held != AGENT_COPY
+    first = _agent_saves(elastic_toml=held)["saved"][0]
+
+    result = _agent_saves(
+        elastic_toml=AGENT_COPY.replace("certutil.exe", "bitsadmin.exe")
+    )
+
+    assert result["saved"] == []
+    assert "belongs to a detection proposal" in result["error"]
+    assert _latest_version(first["rule_id"]) == first["version"]

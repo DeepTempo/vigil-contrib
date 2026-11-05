@@ -206,7 +206,7 @@ def _targets(
             )
         ).all()
         for rule_id, key, _, _ in rows:
-            if not for_person and rollout.proposal_owns(session, rule_id):
+            if not for_person and rollout.person_held(session, rule_id):
                 raise Refused(
                     f"id {key} belongs to a detection proposal: "
                     "a person changes it through that proposal"

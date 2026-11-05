@@ -136,6 +136,26 @@ def proposal_owns(session: Any, rule_id: int) -> bool:
     )
 
 
+def person_held(session: Any, rule_id: int) -> bool:
+    """Whether only a person may change this copy: a proposal owns it, or its stored version
+    says so. A first save that failed before its proposal recorded the copy leaves only that.
+    """
+    if proposal_owns(session, rule_id):
+        return True
+    content = session.scalar(
+        select(DetectionRuleVersion.content)
+        .join(
+            DetectionRule,
+            and_(
+                DetectionRule.id == DetectionRuleVersion.rule_id,
+                DetectionRule.latest_version == DetectionRuleVersion.version,
+            ),
+        )
+        .where(DetectionRule.id == rule_id)
+    )
+    return bool(_toml_rule(content or {}).get(PERSON_PROMOTES))
+
+
 def _copies() -> List[Copy]:
     """Active Elastic overlay copies at their latest version, with their current stage."""
     s = DetectionRuleStage
