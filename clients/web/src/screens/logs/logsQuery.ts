@@ -145,6 +145,7 @@ const DROP_WORDS: Record<string, string> = {
 const NOTE_WORDS: Record<string, string> = {
   bad_score: 'had a LogLM score outside 0 to 1, so it was left out',
   unknown_case: 'named a case that does not exist, so they are not linked',
+  credentials_redacted: 'held a password, token or cookie, which was replaced with [redacted] before storing',
 }
 
 /** What an upload did, whole, including every row it left out. */

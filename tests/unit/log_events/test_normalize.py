@@ -12,6 +12,7 @@ from core.log_events.ingest import (
     DROP_PAST_RETENTION,
     DROP_TOO_LARGE,
     NOTE_BAD_SCORE,
+    NOTE_REDACTED,
     Dropped,
     normalize,
     parse_time,
@@ -313,3 +314,89 @@ def test_a_row_of_no_known_words_still_shows_something():
 def test_source_labels_come_from_the_table_and_other_sources_keep_their_key():
     assert source_label("winsec") == "Windows Security"
     assert source_label("rigapp-audit") == "rigapp-audit"
+
+
+def _stored(record, notes=None):
+    return event({"time": AT.isoformat(), "msg": "hello", **record}, notes=notes)[1]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "password",
+        "Passwd",
+        "client_secret",
+        "accessToken",
+        "api_key",
+        "X-Api-Key",
+        "Authorization",
+        "Cookie",
+        "set-cookie",
+    ],
+)
+def test_a_credential_field_is_gone_before_the_row_is_stored(key):
+    notes = Counter()
+    stored = _stored({key: "hunter2-value"}, notes)
+    assert stored["raw"][key] == "[redacted]"
+    assert "hunter2-value" not in stored["search_text"]
+    assert "hunter2-value" not in stored["summary"]
+    assert "redacted" in stored["tags"]
+    assert notes[NOTE_REDACTED] == 1
+
+
+def test_credentials_are_found_at_any_depth_and_inside_text():
+    stored = _stored(
+        {
+            "request": {"headers": [{"cookie": "abc-cookie"}, {"x": 1}]},
+            "nested": {"deep": {"password": {"value": "deep-pass"}}},
+            "line": "curl -H 'Authorization: Bearer abc.def-123' http://x",
+            "command": "tool --password=sw0rdfish --user bob",
+            "url": "https://x.test/?token=abc123&page=2",
+        }
+    )
+    text = stored["search_text"]
+    for secret in ("abc-cookie", "deep-pass", "abc.def-123", "sw0rdfish", "abc123"):
+        assert secret not in text, secret
+        assert secret not in str(stored["raw"]), secret
+    assert stored["raw"]["nested"]["deep"]["password"] == "[redacted]"
+    assert "page=2" in stored["raw"]["url"]
+    assert "--user bob" in stored["raw"]["command"]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"token_type": "bearer"},
+        {"password_changed": "2026-01-01"},
+        {"TokenElevationType": "%%1936"},
+        {"password": True},
+        {"secret": None},
+    ],
+)
+def test_fields_that_only_mention_a_credential_stay(record):
+    stored = _stored(record)
+    key = next(iter(record))
+    assert stored["raw"][key] == record[key]
+    assert "redacted" not in stored["tags"]
+
+
+def test_redacting_a_credential_does_not_change_which_event_a_row_is():
+    first = _stored({"password": "one"})
+    second = _stored({"password": "two"})
+    assert first["event_id"] == second["event_id"]
+
+
+def test_the_uploaded_case_wins_over_a_rows_own_column():
+    record = {"time": AT.isoformat(), "msg": "x", "case_id": "case-from-row"}
+    assert event(record, case_id="case-from-form")[1]["case_id"] == "case-from-form"
+    assert event(record)[1]["case_id"] == "case-from-row"
+
+
+def test_a_connector_detection_row_takes_its_created_timestamp_as_its_time():
+    row = {"detection_id": "ldt:1", "created_timestamp": AT.isoformat()}
+    assert event(row)[1]["time"] == AT
+
+
+def test_a_created_timestamp_alone_does_not_make_a_row_an_event():
+    with pytest.raises(Dropped):
+        event({"created_timestamp": AT.isoformat(), "msg": "a record, not an event"})

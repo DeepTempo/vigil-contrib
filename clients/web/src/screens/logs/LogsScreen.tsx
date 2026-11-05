@@ -136,6 +136,9 @@ function SendLogs({ status, canSend, uploading, onPick }: { status: LogStatus; c
   return (
     <div className="x1-card" data-testid="logs-empty">
       <h3>No logs yet. How to send them</h3>
+      <p data-testid="logs-by-upload">
+        Logs arrive by upload. Alerts from a connected SIEM or EDR are findings, and they do not fill this screen.
+      </p>
       <p>
         Post a file to <code className="x1-mono">POST {ROUTE}</code>. It takes {status.formats.join(', ')} up to {status.max_upload_mb} MB, and needs the findings.write permission.
       </p>
@@ -220,8 +223,8 @@ export default function LogsScreen({ go, goSettings }: ConsoleScreenProps) {
       setError(null)
     } catch (e) {
       if (ctl.signal.aborted) return
-      const unread = (e as { response?: { status?: number } }).response?.status === 422
-      setError(unread ? errorText(e, 'That search could not be read.') : storeFailed(e))
+      const status = (e as { response?: { status?: number } }).response?.status
+      setError(status === 422 || status === 504 ? errorText(e, 'That search could not be read.') : storeFailed(e))
       // a missed live poll keeps the rows it was showing, under the error; a search shows no old rows as its answer
       if (!quiet) { setResult(null); setRows([]) }
     } finally {

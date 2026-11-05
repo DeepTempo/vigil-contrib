@@ -39,6 +39,7 @@ _KEYED = re.compile(r"^([a-z]+):(.+)$", re.I)
 
 # The words people use for the sources the normalizer names. Any other stored source
 # is matched by its own key.
+PREFIX_MIN = 4
 SOURCE_ALIASES = {
     "sysmon": ("sysmon",),
     "zeek": ("zeek", "network"),
@@ -90,13 +91,18 @@ def parse(q: str) -> List[Term]:
 
 def _source_keys(value: str) -> List[str]:
     v = value.lower()
-    # "fire" finds firewall and "firewalls" too, but a short alias is no prefix of other words: "admin" is not "ad"
-    return [
-        k
-        for k, words in SOURCE_ALIASES.items()
-        if k == v
-        or any(w.startswith(v) or (len(w) >= 4 and v.startswith(w)) for w in words)
-    ] or [v]
+    # "fire" finds firewall and "firewalls" too. Under four letters only a whole alias counts:
+    # "win" is not windows, and "admin" is not "ad". The key as typed is always a source too.
+    keys = {v}
+    for key, words in SOURCE_ALIASES.items():
+        if any(
+            v == w
+            or (len(v) >= PREFIX_MIN and w.startswith(v))
+            or (len(w) >= PREFIX_MIN and v.startswith(w))
+            for w in words
+        ):
+            keys.add(key)
+    return sorted(keys)
 
 
 def _like(col, value: str):

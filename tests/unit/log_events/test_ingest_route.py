@@ -3,7 +3,9 @@
 import json
 
 import pytest
+from sqlalchemy import text
 
+from core.storage.unit_of_work import unit_of_work
 from tests.unit.log_events import samples
 from tests.unit.log_events.samples import make_case
 
@@ -231,3 +233,28 @@ def test_reading_needs_read_and_sending_needs_write(client, reader):
     assert samples.send(client, samples.jsonl([row])).status_code == 403
     assert client.post("/api/log-events/retention/sweep").status_code == 403
     assert found(client) == []
+
+
+def _stored_rows():
+    with unit_of_work() as session:
+        return session.execute(
+            text("SELECT case_id, raw::text, search_text FROM log_events")
+        ).all()
+
+
+def test_a_form_case_wins_over_each_rows_own_case(client, analyst):
+    make_case("case-form")
+    make_case("case-row")
+    row = samples.generic(samples.ago(minutes=5), case_id="case-row")
+    sent = samples.send(client, samples.jsonl([row]), case_id="case-form")
+    assert sent.status_code == 200, sent.text
+    assert _stored_rows()[0][0] == "case-form"
+
+
+def test_a_credential_in_an_upload_is_reported_and_not_stored(client, analyst):
+    row = samples.generic(samples.ago(minutes=5), password="hunter2-value")
+    sent = samples.send(client, samples.jsonl([row]))
+    assert sent.json()["notes"]["credentials_redacted"] == 1
+    _, raw, search = _stored_rows()[0]
+    assert "hunter2-value" not in raw and "hunter2-value" not in search
+    assert "[redacted]" in raw

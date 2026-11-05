@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import and_, case, func, select
+from psycopg2 import errors
+from sqlalchemy import and_, case, func, select, text
+from sqlalchemy.exc import OperationalError
 from starlette.concurrency import run_in_threadpool
 
 from core.auth.permissions import permission_gate
@@ -34,6 +36,7 @@ ROUTER_META = RouterMeta(prefix="/api/log-events", tags=["logs"], auth=Auth.REQU
 _FINDINGS_WRITE = [permission_gate("findings.write")]
 
 MAX_LIMIT = 500
+SEARCH_TIMEOUT_MS = 15_000
 FIT_MIN_PAD = timedelta(minutes=1)
 EXTENSION_FORMATS = {
     ".json": "json",
@@ -56,6 +59,14 @@ def _when(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Not a time: {value}")
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _with_time_limit(session) -> None:
+    """A word search reads every row of its window: ``search_text`` has no index, because a
+    trigram index over whole raw records would cost more than this bounded store is worth. The
+    time limit makes a search too wide for this install answer instead of holding a worker.
+    """
+    session.execute(text(f"SET LOCAL statement_timeout = {int(SEARCH_TIMEOUT_MS)}"))
 
 
 def _fitted(session, matched) -> Optional[Tuple[datetime, datetime]]:
@@ -97,7 +108,23 @@ def search_logs(
     matched = where(q)
     t1 = _when(end) or datetime.now(timezone.utc)
     t0 = _when(start) or t1 - timedelta(hours=24)
+    try:
+        return _search(q, t0, t1, fit, matched, hide, limit, offset, buckets)
+    except OperationalError as exc:
+        if not isinstance(exc.orig, errors.QueryCanceled):
+            raise
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"This search ran past its {SEARCH_TIMEOUT_MS // 1000} second limit. Narrow the "
+                "time range, or add a field such as source: or host: alongside the words."
+            ),
+        ) from exc
+
+
+def _search(q, t0, t1, fit, matched, hide, limit, offset, buckets) -> Dict[str, Any]:
     with unit_of_work() as session:
+        _with_time_limit(session)
         if fit:
             t0, t1 = _fitted(session, matched) or (t0, t1)
         if t0 >= t1:

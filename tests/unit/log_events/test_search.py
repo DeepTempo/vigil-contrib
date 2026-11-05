@@ -237,3 +237,64 @@ def test_status_follows_the_real_loglm_settings(client, analyst):
 def test_the_raw_record_is_what_was_sent(store):
     event = summaries(store, "quokkahost")["events"][0]
     assert json.dumps(event["raw"], sort_keys=True).count("quokkahost.exe") == 2
+
+
+@pytest.mark.parametrize(
+    "value, keys",
+    [
+        ("a", {"a"}),
+        ("win", {"win"}),
+        ("wind", {"wind", "winsec"}),
+        ("fire", {"fire", "paloalto"}),
+        ("ad", {"ad", "winsec"}),
+        ("admin", {"admin"}),
+        ("firewalls", {"firewalls", "paloalto"}),
+        ("winsec", {"winsec"}),
+        ("someapp", {"someapp"}),
+    ],
+)
+def test_a_source_alias_needs_four_letters_to_be_a_prefix_and_keeps_the_literal_key(
+    value, keys
+):
+    from core.log_events.query import _source_keys
+
+    assert set(_source_keys(value)) == keys
+
+
+def test_a_short_source_search_finds_its_own_source_and_not_an_aliased_one(
+    client, analyst
+):
+    at = samples.ago(minutes=5)
+    rows = [
+        samples.generic(at, source="ab", message="a"),
+        samples.generic(at, source="sysmon", message="b"),
+    ]
+    assert samples.send(client, samples.jsonl(rows)).status_code == 200
+    found = client.get(SEARCH, params={"q": "source:ab", "fit": True}).json()
+    assert {e["source"] for e in found["events"]} == {"ab"}
+
+
+def test_a_search_past_its_time_says_so_and_how_to_narrow_it(client, analyst):
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO log_events (event_id, time, source, summary, search_text) "
+                "SELECT 'slow-' || g, now(), 'sysmon', 'x', repeat('word ', 2000) "
+                "FROM generate_series(1, 30000) g"
+            )
+        )
+    from unittest.mock import patch
+
+    with patch("core.log_events.log_events_router.SEARCH_TIMEOUT_MS", 1):
+        answer = client.get(SEARCH, params={"q": "nothingmatchesthis"})
+    assert answer.status_code == 504
+    assert "Narrow the time range" in answer.json()["detail"]
+
+
+def test_a_search_with_no_times_reads_only_the_default_window(client, analyst):
+    answer = client.get(SEARCH, params={"q": "word"}).json()
+    from datetime import datetime
+
+    start = datetime.fromisoformat(answer["start"].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(answer["end"].replace("Z", "+00:00"))
+    assert (end - start).total_seconds() == 24 * 3600

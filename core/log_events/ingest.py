@@ -48,6 +48,22 @@ DROP_FUTURE_TIME = "future_time"
 # What was left out of a row that was stored.
 NOTE_BAD_SCORE = "bad_score"
 NOTE_UNKNOWN_CASE = "unknown_case"
+NOTE_REDACTED = "credentials_redacted"
+
+REDACTED = "[redacted]"
+REDACTED_TAG = "redacted"
+# A field is a credential when its name ends in one of these. "token_type" and
+# "password_changed" name something about a credential and keep their values.
+_CREDENTIAL_NAME = re.compile(
+    r"(password|passwd|pwd|secret|token|apikey|api_key|authorization|cookie)$"
+)
+_BEARER = re.compile(r"\b(bearer)\s+[a-z0-9._~+/=-]+", re.I)
+_CREDENTIAL_IN_TEXT = re.compile(
+    r"\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)"
+    r"(\s*[=:]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|[^\s&;,]+)",
+    re.I,
+)
 
 SCORE_FIELDS = ("loglm", "loglm_score")
 CASE_FIELDS = ("case_id",)
@@ -635,6 +651,35 @@ def _clean(value: Any) -> Any:
     return value
 
 
+def _names_a_credential(key: str) -> bool:
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower().replace("-", "_")
+    return _CREDENTIAL_NAME.search(words) is not None
+
+
+def _redact_text(text: str) -> str:
+    text = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
+    return _CREDENTIAL_IN_TEXT.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text
+    )
+
+
+def _redacted(value: Any) -> Any:
+    """``value`` with every credential in it replaced, field by field and inside text."""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        return [_redacted(item) for item in value]
+    if isinstance(value, dict):
+        kept: Dict[str, Any] = {}
+        for key, item in value.items():
+            held = item is not None and not isinstance(item, bool)
+            kept[key] = (
+                REDACTED if held and _names_a_credential(key) else _redacted(item)
+            )
+        return kept
+    return value
+
+
 def _flatten(record: Mapping[str, Any]) -> Dict[str, Any]:
     """Every value by its lower-cased dotted path. A literal dotted key, as Zeek writes, stays as it is."""
     flat: Dict[str, Any] = {}
@@ -785,7 +830,10 @@ def normalize(
     """One row in the one schema, or ``Dropped`` with the reason."""
     if not isinstance(record, dict):
         raise Dropped(DROP_NOT_OBJECT)
-    raw = _clean(record)
+    cleaned = _clean(record)
+    raw = _redacted(cleaned)
+    if raw != cleaned:
+        notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)
     }
@@ -800,6 +848,10 @@ def normalize(
     values = {name: _lookup(flat, paths) for name, paths in shape.fields.items()}
 
     when = parse_time(values.get("time"))
+    # A connector's exported detection dates itself here, and a bare record of something else
+    # does not become an event for having a creation time.
+    if when is None and shape.source == GENERIC_SOURCE and flat.get("detection_id"):
+        when = parse_time(_lookup(flat, ("created_timestamp",)))
     if when is None:
         raise Dropped(DROP_NO_TIME)
     if when < oldest:
@@ -858,10 +910,15 @@ def normalize(
         "summary": summary[:MAX_SUMMARY_CHARS],
         "mitre": mitre.group(0).upper() if mitre else None,
         "loglm": _score(flat, notes),
-        "case_id": _fit("case_id", _lookup(flat, CASE_FIELDS)) or case_id,
-        "tags": (
-            [t for t in tags if isinstance(t, str)] if isinstance(tags, list) else []
-        ),
+        "case_id": case_id or _fit("case_id", _lookup(flat, CASE_FIELDS)),
+        "tags": [
+            *(
+                [t for t in tags if isinstance(t, str)]
+                if isinstance(tags, list)
+                else []
+            ),
+            *([REDACTED_TAG] if raw != cleaned else []),
+        ],
         "raw": raw,
     }
     event["search_text"] = search_text(event)
