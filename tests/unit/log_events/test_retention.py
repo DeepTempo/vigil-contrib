@@ -1,5 +1,6 @@
 """Retention keeps this a bounded evidence store."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -55,6 +56,23 @@ def test_the_sweep_deletes_what_is_past_retention_and_keeps_the_rest(
     monkeypatch.setenv("LOG_EVENTS_RETENTION_DAYS", "90")
     samples.send(client, samples.jsonl([samples.dns_log(samples.ago(days=40))]))
     assert sweep() == 0
+
+
+@pytest.mark.unit
+@pytest.mark.database
+def test_the_daemons_default_cleanup_sweeps_log_events(client, analyst):
+    from services.daemon.config import SchedulerConfig
+    from services.daemon.scheduler import TaskScheduler
+
+    at = samples.ago(hours=1)
+    samples.send(client, samples.jsonl([samples.zeek_conn(at)]))
+    backdate("192.0.2.5", client, 31)
+
+    scheduler = TaskScheduler(SchedulerConfig())
+    scheduler._register_default_tasks()
+    cleanup = next(task for task in scheduler._tasks if task.name == "cleanup")
+    assert asyncio.run(cleanup.func())["log_events_removed"] == 1
+    assert client.get("/api/log-events/status").json()["total"] == 0
 
 
 @pytest.mark.unit
