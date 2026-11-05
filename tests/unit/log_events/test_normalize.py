@@ -338,10 +338,10 @@ def _stored(record, notes=None):
 )
 def test_a_credential_field_is_gone_before_the_row_is_stored(key):
     notes = Counter()
-    stored = _stored({key: "hunter2-value"}, notes)
+    stored = _stored({key: "hunter2val"}, notes)
     assert stored["raw"][key] == "[redacted]"
-    assert "hunter2-value" not in stored["search_text"]
-    assert "hunter2-value" not in stored["summary"]
+    assert "hunter2val" not in stored["search_text"]
+    assert "hunter2val" not in stored["summary"]
     assert "redacted" in stored["tags"]
     assert notes[NOTE_REDACTED] == 1
 

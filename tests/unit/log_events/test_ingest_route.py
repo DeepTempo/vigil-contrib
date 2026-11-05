@@ -252,9 +252,9 @@ def test_a_form_case_wins_over_each_rows_own_case(client, analyst):
 
 
 def test_a_credential_in_an_upload_is_reported_and_not_stored(client, analyst):
-    row = samples.generic(samples.ago(minutes=5), password="hunter2-value")
+    row = samples.generic(samples.ago(minutes=5), password="hunter2val")
     sent = samples.send(client, samples.jsonl([row]))
     assert sent.json()["notes"]["credentials_redacted"] == 1
     _, raw, search = _stored_rows()[0]
-    assert "hunter2-value" not in raw and "hunter2-value" not in search
+    assert "hunter2val" not in raw and "hunter2val" not in search
     assert "[redacted]" in raw
