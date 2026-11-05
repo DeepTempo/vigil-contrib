@@ -23,7 +23,7 @@ const HELP: [string, string][] = [
   ['powershell', 'the word anywhere in the event, including the original record'],
   ['"failed logon"', 'the exact phrase'],
   ['host:wks-12', 'source or destination host contains wks-12'],
-  ['ip:10.0.0.5  ip:10.0.0.', 'an exact IP, or every IP that starts that way'],
+  ['ip:192.0.2.5  ip:192.0.2.', 'an exact IP, or every IP that starts that way'],
   ['user:jdoe  port:445', 'a person, a destination port'],
   ['source:sysmon,crowdstrike  beacon,c2', 'a comma means either'],
   ['sev:high  class:auth  action:deny', 'severity, event class, what happened'],
@@ -454,7 +454,7 @@ export default function LogsScreen({ go, goSettings }: ConsoleScreenProps) {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Escape' && q) { e.preventDefault(); setQ(applied) } }}
-              placeholder='Search: words, "a phrase", host:wks-12 user:jdoe ip:10.0.0.5 port:445 -source:entra loglm>0.7'
+              placeholder='Search: words, "a phrase", host:wks-12 user:jdoe ip:192.0.2.5 port:445 -source:entra loglm>0.7'
               aria-label="Search events"
               spellCheck={false}
             />

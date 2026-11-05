@@ -32,11 +32,15 @@ from tests.unit.autonomy_kinds.conftest import (
 pytestmark = [pytest.mark.unit, pytest.mark.database]
 
 BASE = "/api/kind-autonomy"
-BENIGN_REPLY = "SEVERITY: low\nCONFIDENCE: 0.4\nRECOMMENDED_ACTION: monitor\nREASONING: fine"
+BENIGN_REPLY = (
+    "SEVERITY: low\nCONFIDENCE: 0.4\nRECOMMENDED_ACTION: monitor\nREASONING: fine"
+)
 
 
 def _adopt(client, key=None):
-    return client.post(f"{BASE}/{key or kind_key()}/adopt", json={"reason": "Reviewed."})
+    return client.post(
+        f"{BASE}/{key or kind_key()}/adopt", json={"reason": "Reviewed."}
+    )
 
 
 def _events(client, key=None):
@@ -194,14 +198,18 @@ def test_a_service_account_cannot_adopt_or_revoke(client, act_as):
     act_as("ka-service", service=True)
     assert _adopt(client).status_code == 403
     assert client.post(f"{BASE}/{kind_key()}/revoke").status_code == 403
-    assert client.put(f"{BASE}/settings", json={"close_enabled": True}).status_code == 403
+    assert (
+        client.put(f"{BASE}/settings", json={"close_enabled": True}).status_code == 403
+    )
 
 
 def test_adoption_is_refused_while_autonomy_is_stopped(client, admin):
     earn()
     assert client.post("/api/orchestrator/kill").status_code == 200
     assert _adopt(client).status_code == 409
-    assert client.put(f"{BASE}/settings", json={"close_enabled": True}).status_code == 409
+    assert (
+        client.put(f"{BASE}/settings", json={"close_enabled": True}).status_code == 409
+    )
 
 
 def test_a_person_revokes_and_a_later_adoption_works(client, admin):
@@ -240,7 +248,9 @@ async def test_on_a_live_policy_closes_and_records_vigil_as_the_closer(client, a
     assert kind == "agent"
     assert reason == f"{POLICY_REASON_PREFIX}{policy_id}"
     offer.assert_not_awaited()
-    assert _sql("SELECT count(*) FROM intake_triggers WHERE finding_id = 'new'")[0][0] == 0
+    assert (
+        _sql("SELECT count(*) FROM intake_triggers WHERE finding_id = 'new'")[0][0] == 0
+    )
     trail = _sql(
         "SELECT payload->>'action' FROM audit_trail "
         "WHERE payload->>'finding_id' = 'new' ORDER BY seq DESC LIMIT 1"
@@ -395,7 +405,9 @@ def test_a_real_closure_after_adoption_suspends_with_an_event(client, admin):
     row = row_of(client)
     assert row["mode"] == "suspended"
     assert row["adoption"] is None
-    assert row["mode_reason"].startswith("A person closed an alert of this kind as real")
+    assert row["mode_reason"].startswith(
+        "A person closed an alert of this kind as real"
+    )
     event = _events(client)[0]
     assert event["event"] == "suspend"
     assert event["actor_label"] == "Vigil"
@@ -490,9 +502,7 @@ async def test_a_person_samples_and_overturns_and_that_suspends(client, admin):
     assert event["actor"] == PERSON
 
     # After the suspension the other closure can still be overturned, and counts too.
-    assert (
-        client.post(f"{BASE}/{kind_key()}/closed/auto-2/overturn").status_code == 200
-    )
+    assert client.post(f"{BASE}/{kind_key()}/closed/auto-2/overturn").status_code == 200
     assert row_of(client)["track_record"]["overturned"] == 2
     assert client.get(f"{BASE}/{kind_key()}/closed").json()["total"] == 0
 

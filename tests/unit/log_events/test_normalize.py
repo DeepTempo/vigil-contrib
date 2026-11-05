@@ -44,11 +44,11 @@ def event(record, source=None, case_id=None, notes=None):
             {
                 "source": "zeek",
                 "event_class": "Network",
-                "src_ip": "10.20.0.5",
-                "dst_ip": "10.20.0.9",
+                "src_ip": "192.0.2.5",
+                "dst_ip": "192.0.2.9",
                 "dst_port": 445,
                 "action": "completed",
-                "summary": "tcp smb 10.20.0.5 to 10.20.0.9 port 445 completed 1200 bytes out",
+                "summary": "tcp smb 192.0.2.5 to 192.0.2.9 port 445 completed 1200 bytes out",
             },
         ),
         (
@@ -57,7 +57,7 @@ def event(record, source=None, case_id=None, notes=None):
             {
                 "source": "dns",
                 "event_class": "DNS",
-                "src_ip": "10.20.0.5",
+                "src_ip": "192.0.2.5",
                 "dst_host": "quokka-update.example.net",
                 "action": "NOERROR",
                 "summary": "A query quokka-update.example.net answered 198.51.100.7",
@@ -68,7 +68,7 @@ def event(record, source=None, case_id=None, notes=None):
             "dns",
             {
                 "source": "dns",
-                "src_ip": "10.20.0.6",
+                "src_ip": "192.0.2.6",
                 "dst_host": "wombat-cdn.example.org",
                 "action": "NXDOMAIN",
             },
@@ -81,7 +81,7 @@ def event(record, source=None, case_id=None, notes=None):
                 "event_class": "Authentication",
                 "action": "logon_failed",
                 "user_name": "pat.quill",
-                "src_ip": "10.20.0.7",
+                "src_ip": "192.0.2.7",
                 "src_host": "wks-rig-7",
                 "dst_host": "dc-rig-1.corp.example",
             },

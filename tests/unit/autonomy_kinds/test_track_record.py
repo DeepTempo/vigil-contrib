@@ -64,9 +64,7 @@ def _rules(record):
 
 def test_one_case_with_59_alerts_is_one_label():
     ids = [f"a{i}" for i in range(59)]
-    record = _records(
-        [_alert(i) for i in ids], [_closure("case-1", ids=ids)]
-    )[KIND]
+    record = _records([_alert(i) for i in ids], [_closure("case-1", ids=ids)])[KIND]
     assert record.alerts_seen == 59
     assert record.clean_labels == 1
     assert "enough_clean_labels" in _rules(record)
@@ -246,7 +244,9 @@ def test_a_real_closure_after_adoption_suspends():
 
 
 def test_a_real_closure_before_adoption_does_not():
-    assert demotion_due(ADOPTION, [_real_label(ADOPTED - timedelta(days=1))], NOW) is None
+    assert (
+        demotion_due(ADOPTION, [_real_label(ADOPTED - timedelta(days=1))], NOW) is None
+    )
 
 
 def test_a_policy_expires_at_its_lifetime_and_not_before():

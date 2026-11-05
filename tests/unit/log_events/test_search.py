@@ -22,7 +22,7 @@ def store(client, analyst):
             samples.ago(minutes=20),
             uid="Cfake0002",
             loglm=0.2,
-            **{"id.resp_h": "10.20.100.9"},
+            **{"id.resp_h": "203.0.113.9"},
         ),
         samples.windows_logon(samples.ago(hours=2)),
         samples.sysmon_process(samples.ago(hours=3)),
@@ -52,7 +52,7 @@ def summaries(client, q, **params):
         ('"exported the quokka"', {"rigapp-audit"}),
         ("host:wks-rig-8", {"sysmon"}),
         ("user:lee.marsh", {"entra"}),
-        ("ip:10.20.0.9", {"zeek"}),
+        ("ip:192.0.2.9", {"zeek"}),
         ("port:445", {"zeek"}),
         ("port:not-a-port", set()),
         ("sev:medium", {"rigapp-audit"}),
@@ -73,13 +73,13 @@ def test_search_terms_find_their_sources(store, q, sources):
 
 
 def test_a_prefix_stops_on_a_dot(store):
-    prefix = summaries(store, "ip:10.20.0")["events"]
+    prefix = summaries(store, "ip:192.0.2")["events"]
     assert all(
-        e["srcIp"].startswith("10.20.0.") or (e["dstIp"] or "").startswith("10.20.0.")
+        e["srcIp"].startswith("192.0.2.") or (e["dstIp"] or "").startswith("192.0.2.")
         for e in prefix
     )
-    just_the_other = summaries(store, "ip:10.20.100")["events"]
-    assert [e["dstIp"] for e in just_the_other] == ["10.20.100.9"]
+    just_the_other = summaries(store, "ip:203.0.113")["events"]
+    assert [e["dstIp"] for e in just_the_other] == ["203.0.113.9"]
 
 
 def test_underscore_and_percent_are_letters(store):

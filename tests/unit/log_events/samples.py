@@ -25,9 +25,9 @@ def zeek_conn(at: datetime, **more: Any) -> Dict[str, Any]:
     return {
         "ts": at.timestamp(),
         "uid": "Cfake0001",
-        "id.orig_h": "10.20.0.5",
+        "id.orig_h": "192.0.2.5",
         "id.orig_p": 50112,
-        "id.resp_h": "10.20.0.9",
+        "id.resp_h": "192.0.2.9",
         "id.resp_p": 445,
         "proto": "tcp",
         "service": "smb",
@@ -41,8 +41,8 @@ def zeek_conn(at: datetime, **more: Any) -> Dict[str, Any]:
 def zeek_dns(at: datetime) -> Dict[str, Any]:
     return {
         "ts": at.timestamp(),
-        "id.orig_h": "10.20.0.5",
-        "id.resp_h": "10.20.0.2",
+        "id.orig_h": "192.0.2.5",
+        "id.resp_h": "192.0.2.2",
         "id.resp_p": 53,
         "query": "quokka-update.example.net",
         "qtype_name": "A",
@@ -54,7 +54,7 @@ def zeek_dns(at: datetime) -> Dict[str, Any]:
 def dns_log(at: datetime) -> Dict[str, Any]:
     return {
         "timestamp": iso(at),
-        "client_ip": "10.20.0.6",
+        "client_ip": "192.0.2.6",
         "query_name": "wombat-cdn.example.org",
         "query_type": "AAAA",
         "rcode": "NXDOMAIN",
@@ -69,7 +69,7 @@ def windows_logon(at: datetime) -> Dict[str, Any]:
         "Computer": "dc-rig-1.corp.example",
         "EventData": {
             "TargetUserName": "pat.quill",
-            "IpAddress": "::ffff:10.20.0.7",
+            "IpAddress": "::ffff:192.0.2.7",
             "WorkstationName": "wks-rig-7",
             "LogonType": 3,
         },
@@ -107,7 +107,7 @@ def paloalto_csv_row(at: datetime) -> Dict[str, Any]:
     return {
         "Receive Time": at.strftime("%Y/%m/%d %H:%M:%S"),
         "Type": "TRAFFIC",
-        "Source address": "10.20.0.5",
+        "Source address": "192.0.2.5",
         "Destination address": "203.0.113.40",
         "Destination Port": "8443",
         "Source User": "CORP\\sam.ridge",

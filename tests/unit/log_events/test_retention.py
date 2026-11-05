@@ -62,7 +62,7 @@ def test_the_sweep_deletes_what_is_past_retention_and_keeps_the_rest(
 def test_the_route_sweeps_and_says_how_many_went(client, analyst):
     at = samples.ago(hours=1)
     samples.send(client, samples.jsonl([samples.zeek_conn(at)]))
-    backdate("10.20.0.5", client, 31)
+    backdate("192.0.2.5", client, 31)
     answer = client.post("/api/log-events/retention/sweep")
     assert answer.status_code == 200
     assert answer.json() == {"deleted": 1, "retention_days": 30}
@@ -73,7 +73,7 @@ def test_the_route_sweeps_and_says_how_many_went(client, analyst):
 def test_each_ingest_sweeps_too(client, analyst):
     at = samples.ago(hours=1)
     samples.send(client, samples.jsonl([samples.zeek_conn(at)]))
-    backdate("10.20.0.5", client, 31)
+    backdate("192.0.2.5", client, 31)
     report = samples.send(client, samples.jsonl([samples.dns_log(at)])).json()
     assert report["swept"] == 1
     assert client.get("/api/log-events/status").json()["total"] == 1

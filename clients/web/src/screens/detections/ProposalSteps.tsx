@@ -337,8 +337,7 @@ function OutputRow({ row }: { row: TargetRow }) {
         <td className="num">{row.measured_valid_pct != null ? `${row.measured_valid_pct}%` : ''}</td>
         <td>
           {row.output && <span className="x1-row" style={{ gap: 10 }}><button type="button" className="x1-link" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'Show'}</button><button type="button" className="x1-link" onClick={download}>Download</button></span>}
-          {!row.output && row.error && row.status !== 'not_installed' && <span className="x1-muted" style={{ fontSize: 12 }}>{row.error}</span>}
-          {row.status === 'not_installed' && <span className="x1-muted" style={{ fontSize: 12 }}>No backend for this target here</span>}
+          {!row.output && row.error && <span className="x1-muted" style={{ fontSize: 12 }}>{row.error}</span>}
         </td>
       </tr>
       {open && <tr><td colSpan={5}><div className="de-output x1-mono x1-muted">{row.file}</div><pre className="x1-pre">{row.output}</pre></td></tr>}
