@@ -675,3 +675,28 @@ def test_a_credential_already_holding_the_marker_text_is_still_reported(record):
     notes = Counter()
     _stored(record, notes)
     assert notes == Counter({NOTE_REDACTED: 1})
+
+
+def test_text_that_already_quotes_the_marker_past_the_try_budget_names_no_credential():
+    message = "{} " * 64 + '{"a":"' + TOO_LARGE_TO_CHECK + '"}'
+    notes = Counter()
+    _stored({"message": message}, notes)
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1})
+
+
+def test_a_row_past_the_try_budget_reports_a_credential_already_holding_the_marker():
+    notes = Counter()
+    _stored({"message": "{} " * 64 + '{"a":1}', "password": "dummy [redacted]"}, notes)
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1, NOTE_REDACTED: 1})
+
+
+def test_a_row_already_redacted_reports_nothing_new():
+    notes = Counter()
+    _stored(
+        {
+            "password": "[redacted]",
+            "message": 'Bearer [redacted] {"token": "[redacted]"}',
+        },
+        notes,
+    )
+    assert notes == Counter()

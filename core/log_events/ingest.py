@@ -677,13 +677,26 @@ def _names_a_credential(key: str) -> bool:
     return _CREDENTIAL_NAME.search(words) is not None
 
 
-def _redact_embedded_json(text: str, depth: int) -> str:
+@dataclass
+class _Replaced:
+    """What redacting one row replaced. Only the replacing code knows: a value can already read
+    like either marker, so comparing the row before and after cannot tell.
+    """
+
+    credential: bool = False
+    unread: bool = False
+
+
+def _redact_embedded_json(text: str, depth: int, replaced: _Replaced) -> str:
     """``text`` with each JSON object or array in it redacted as data. A value with nothing to
     redact keeps its exact bytes. JSON past these bounds goes unread, and text it held cannot be
     known safe, so the marker replaces it.
     """
     if depth >= MAX_EMBEDDED_JSON_DEPTH or len(text) > MAX_EMBEDDED_JSON_CHARS:
-        return TOO_LARGE_TO_CHECK if _LOOKS_LIKE_JSON.search(text) else text
+        if _LOOKS_LIKE_JSON.search(text):
+            replaced.unread = True
+            return TOO_LARGE_TO_CHECK
+        return text
     pieces: List[str] = []
     copied = 0
     at = 0
@@ -698,12 +711,13 @@ def _redact_embedded_json(text: str, depth: int) -> str:
             at = start + 1
             continue
         at = end
-        clean = _redacted(value, depth + 1)
+        clean = _redacted(value, replaced, depth + 1)
         if clean != value:
             pieces += [text[copied:start], json.dumps(clean, ensure_ascii=False)]
             copied = end
     else:
         if _LOOKS_LIKE_JSON.search(text, at):
+            replaced.unread = True
             return TOO_LARGE_TO_CHECK
     return "".join([*pieces, text[copied:]])
 
@@ -729,34 +743,35 @@ def _masked(match: re.Match) -> str:
     return f"{match.group(1)}{match.group(2)}{quote}{REDACTED}{quote}"
 
 
-def _redact_text(text: str, depth: int = 0) -> str:
-    text = _redact_embedded_json(text, depth)
-    text = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
-    text = _HEADER_IN_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
-    return _CREDENTIAL_IN_TEXT.sub(_masked, text)
+def _redact_text(text: str, replaced: _Replaced, depth: int) -> str:
+    read = _redact_embedded_json(text, depth, replaced)
+    masked = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", read)
+    masked = _HEADER_IN_TEXT.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", masked
+    )
+    masked = _CREDENTIAL_IN_TEXT.sub(_masked, masked)
+    if masked != read:
+        replaced.credential = True
+    return masked
 
 
-def _redacted(value: Any, depth: int = 0) -> Any:
+def _redacted(value: Any, replaced: _Replaced, depth: int = 0) -> Any:
     """``value`` with every credential in it replaced, field by field and inside text."""
     if isinstance(value, str):
-        return _redact_text(value, depth)
+        return _redact_text(value, replaced, depth)
     if isinstance(value, list):
-        return [_redacted(item, depth) for item in value]
+        return [_redacted(item, replaced, depth) for item in value]
     if isinstance(value, dict):
         kept: Dict[str, Any] = {}
         for key, item in value.items():
             held = item is not None and not isinstance(item, bool)
-            kept[key] = (
-                REDACTED
-                if held and _names_a_credential(key)
-                else _redacted(item, depth)
-            )
+            if held and _names_a_credential(key):
+                replaced.credential = replaced.credential or item != REDACTED
+                kept[key] = REDACTED
+            else:
+                kept[key] = _redacted(item, replaced, depth)
         return kept
     return value
-
-
-def _gained(marker: str, before: Any, after: Any) -> bool:
-    return str(after).count(marker) > str(before).count(marker)
 
 
 def _flatten(record: Mapping[str, Any]) -> Dict[str, Any]:
@@ -911,11 +926,11 @@ def normalize(
         raise Dropped(DROP_NOT_OBJECT)
     cleaned = _clean(record)
     checkable = _with_large_json_replaced(cleaned)
-    raw = _redacted(checkable)
-    unread = _gained(TOO_LARGE_TO_CHECK, checkable, raw)
-    if checkable != cleaned or unread:
+    replaced = _Replaced()
+    raw = _redacted(checkable, replaced)
+    if checkable != cleaned or replaced.unread:
         notes[NOTE_JSON_TOO_LARGE] += 1
-    if _gained(REDACTED, checkable, raw) if unread else raw != checkable:
+    if replaced.credential:
         notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)
