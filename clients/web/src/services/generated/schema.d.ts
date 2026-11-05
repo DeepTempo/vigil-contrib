@@ -307,6 +307,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/alert-triage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Alert Triage */
+        get: operations["get_api_alert-triage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/analytics": {
         parameters: {
             query?: never;
@@ -7839,6 +7856,50 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /** AlertKind */
+        AlertKind: {
+            /** Alerts */
+            alerts: number;
+            /** Case Ids */
+            case_ids?: string[];
+            /** Finding Ids */
+            finding_ids?: string[];
+            /** Key */
+            key: string;
+            /** Latest At */
+            latest_at?: string | null;
+            /** Median Seconds To Outcome */
+            median_seconds_to_outcome?: number | null;
+            /** Outcomes */
+            outcomes: components["schemas"]["OutcomeCount"][];
+            /** Severities */
+            severities: components["schemas"]["SeverityCount"][];
+            /** Source */
+            source: string;
+            /**
+             * Timed Outcomes
+             * @default 0
+             */
+            timed_outcomes: number;
+            /** Title */
+            title: string;
+        };
+        /** AlertTriage */
+        AlertTriage: {
+            /** Alerts */
+            alerts: number;
+            /** Hours */
+            hours: number;
+            /** Kinds */
+            kinds: components["schemas"]["AlertKind"][];
+            /** Outcomes */
+            outcomes: components["schemas"]["OutcomeCount"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** ApprovalActionResult */
         ApprovalActionResult: {
             action: components["schemas"]["PendingActionResponse"];
@@ -10789,6 +10850,15 @@ export interface components {
              */
             workdir_base: string;
         };
+        /** OutcomeCount */
+        OutcomeCount: {
+            /** Alerts */
+            alerts: number;
+            /** Label */
+            label: string;
+            /** State */
+            state: string;
+        };
         /**
          * PasswordResetConfirm
          * @description Password reset completion.
@@ -11465,6 +11535,13 @@ export interface components {
             demo_enabled: boolean;
             /** Steps */
             steps: components["schemas"]["SetupStep"][];
+        };
+        /** SeverityCount */
+        SeverityCount: {
+            /** Alerts */
+            alerts: number;
+            /** Severity */
+            severity: string;
         };
         /** SkillCaseResult */
         SkillCaseResult: {
@@ -13112,6 +13189,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelInfoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "get_api_alert-triage": {
+        parameters: {
+            query?: {
+                hours?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertTriage"];
                 };
             };
             /** @description Validation Error */
