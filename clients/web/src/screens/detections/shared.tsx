@@ -10,6 +10,11 @@ export function refusal(error: unknown, fallback: string): string {
   return errorText(error, fallback)
 }
 
+/** The number is rounded down, so a real validation never reads as none. */
+export function percentLabel({ percent_validated: percent, counted_validated: validated }: Coverage['summary']): string {
+  return percent === 0 && validated > 0 ? 'under 1%' : `${percent}%`
+}
+
 export function percentLine(coverage: Coverage): string {
   const { basis, counted, counted_validated: validated } = coverage.summary
   if (counted === 0) return 'No technique has a rule, an alert or a priority yet'

@@ -5,7 +5,7 @@ import { detectionsApi, type Coverage } from '../../services/detectionsApi'
 import { errorText } from '../../shared/errorText'
 import ProgramTab from './ProgramTab'
 import ProposalsTab from './ProposalsTab'
-import { percentLine } from './shared'
+import { percentLabel, percentLine } from './shared'
 import '../shared/x1.css'
 import './detections.css'
 
@@ -42,7 +42,7 @@ export default function DetectionEngineeringScreen({ go, goSettings, openCase }:
           </span>
         </div>
         <div className="de-pct" data-testid="de-percent">
-          {coverage?.summary.percent_validated != null ? <b>{coverage.summary.percent_validated}%</b> : <b>No data</b>}
+          {coverage?.summary.percent_validated != null ? <b>{percentLabel(coverage.summary)}</b> : <b>No data</b>}
           <span>{coverage ? percentLine(coverage) : 'Reading the heat map'}</span>
         </div>
       </div>

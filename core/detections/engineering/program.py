@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.detections.engineering import proposals, sigma_text
-from core.detections.engineering.replay import logged_fields
+from core.detections.engineering.replay import absent_from_sample, logged_fields
 from core.detections.inventory import catalog
 from core.detections.inventory.readers import OVERLAY_SOURCE
 from core.detections.reconstruction import (
@@ -314,7 +314,7 @@ def _health(
     if sees.get("result") == "fail":
         return "data_silent", str(sees.get("reason") or "Its data is not arriving.")
     if missing:
-        return "missing_field", f"No stored event has {', '.join(missing)}."
+        return "missing_field", absent_from_sample(missing)
     if fires:
         return "fires", f"Fired {fires} times in {FIRES_WINDOW_DAYS} days."
     return "never_fired", f"No finding named it in {FIRES_WINDOW_DAYS} days."

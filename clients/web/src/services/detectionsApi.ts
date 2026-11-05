@@ -62,7 +62,9 @@ export interface StepEvidence {
   false_positive_samples?: EventSample[]
   /** The reader may not read findings, so the sample rows are empty. */
   samples_withheld?: boolean
-  window_days?: number
+  window_hours?: number
+  /** Whether "other rows" means every row, or only rows holding a field the rule reads. */
+  benign_scope?: 'all_rows' | 'holding_fields'
   proven?: boolean
   unproven_because?: string | null
   exclusion?: { field: string; match: string; values: string[] }
@@ -132,11 +134,21 @@ export interface ProposalRow {
 export interface ShadowReport {
   evaluated: boolean
   reason?: string
+  /** When the rule entered shadow. */
+  began?: string
+  /** Where this measure starts: `began`, or later when a person chose a window. */
   since?: string
-  /** Rows stored since shadow began, whether or not they were read. */
+  window_hours?: number | null
+  /** Whether only rows holding a field the rule reads were measured. */
+  scoped?: boolean
+  /** Every row stored in the window. */
+  rows_stored?: number
+  /** The rows the rule could match in the window, whether or not they were read. */
   rows?: number
   rows_checked?: number
   truncated?: boolean
+  /** What a person can do about a truncated measure. */
+  advice?: string | null
   matches?: number
   matches_in_case?: number
   matches_unclaimed?: number
@@ -262,13 +274,14 @@ export const detectionsApi = {
   fromRule: (ruleId: number) => api.post<Proposal>(`${BASE}/proposals/from-rule`, { rule_id: ruleId }).then((r) => r.data),
   edit: (id: string, sigma: string, reason: string) => step(id, 'edit', { sigma, reason }),
   lint: (id: string) => step(id, 'lint'),
-  replay: (id: string, windowDays: number) => step(id, 'replay', { window_days: windowDays }),
+  replay: (id: string, windowHours: number) => step(id, 'replay', { window_hours: windowHours }),
   tune: (id: string, body: { field: string; match: string; values: string[]; reason: string }) => step(id, 'tune', body),
   convert: (id: string, body: { pasted?: Record<string, string>; accept_reason?: string }) => step(id, 'convert', body),
   shadow: (id: string, reason: string) => step(id, 'shadow', { reason }),
-  live: (id: string, reason: string) => step(id, 'live', { reason }),
+  live: (id: string, reason: string, windowHours?: number | null) => step(id, 'live', { reason, window_hours: windowHours ?? undefined }),
   reject: (id: string, reason: string) => step(id, 'reject', { reason }),
-  shadowReport: (id: string) => api.get<ShadowReport>(`${BASE}/proposals/${encodeURIComponent(id)}/shadow-report`).then((r) => r.data),
+  shadowReport: (id: string, windowHours?: number | null) =>
+    api.get<ShadowReport>(`${BASE}/proposals/${encodeURIComponent(id)}/shadow-report`, { params: { window_hours: windowHours ?? undefined } }).then((r) => r.data),
   targets: () => api.get<TargetsReport>(`${BASE}/targets`).then((r) => r.data),
   coverage: () => api.get<Coverage>(`${BASE}/coverage`).then((r) => r.data),
   rules: () => api.get<RulesReport>(`${BASE}/rules`).then((r) => r.data),

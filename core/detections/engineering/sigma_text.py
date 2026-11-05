@@ -14,6 +14,14 @@ _TECHNIQUE_TAG = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
 TECHNIQUE_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 _FIELD_NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
 EXCLUSION_MATCHES = ("contains", "startswith", "endswith", "equals")
+MAX_YAML_DEPTH = 32
+_OPENS = (
+    yaml.BlockMappingStartToken,
+    yaml.BlockSequenceStartToken,
+    yaml.FlowMappingStartToken,
+    yaml.FlowSequenceStartToken,
+)
+_CLOSES = (yaml.BlockEndToken, yaml.FlowMappingEndToken, yaml.FlowSequenceEndToken)
 
 
 class NotARule(ValueError):
@@ -37,8 +45,41 @@ class Exclusion:
             raise NotARule("An exclusion needs at least one value.")
 
 
+def unsafe_because(text: str) -> Optional[str]:
+    """Why loading ``text`` could cost far more than its size, read from its tokens alone.
+
+    An alias or merge key lets a few hundred bytes expand without bound, and loading recurses
+    once per level of nesting. Scanning does neither. Text that does not scan is left for the
+    loader to refuse.
+    """
+    depth = 0
+    try:
+        for token in yaml.scan(text, Loader=yaml.SafeLoader):
+            if isinstance(token, (yaml.AliasToken, yaml.AnchorToken)) or (
+                isinstance(token, yaml.ScalarToken)
+                and token.plain
+                and token.value == "<<"
+            ):
+                return (
+                    "This text uses a YAML alias or merge key, and Vigil does not expand "
+                    "or nest those in a rule. Write the values out in full."
+                )
+            depth += isinstance(token, _OPENS)
+            depth -= isinstance(token, _CLOSES)
+            if depth > MAX_YAML_DEPTH:
+                return (
+                    f"This text is nested more than {MAX_YAML_DEPTH} levels deep, and Vigil "
+                    "does not expand or nest a rule that far."
+                )
+    except yaml.YAMLError:
+        return None
+    return None
+
+
 def parse(text: str) -> Optional[Dict[str, Any]]:
     """The one YAML mapping ``text`` holds, or None."""
+    if unsafe_because(text):
+        return None
     try:
         docs = [d for d in yaml.safe_load_all(text) if d is not None]
     except yaml.YAMLError:
@@ -54,6 +95,21 @@ def techniques(doc: Dict[str, Any]) -> List[str]:
         return []
     found = (_TECHNIQUE_TAG.fullmatch(str(tag)) for tag in tags)
     return list(dict.fromkeys(m.group(1).upper() for m in found if m))
+
+
+def names_every_field(doc: Dict[str, Any]) -> bool:
+    """Whether every selection is field maps. A keyword selection reads the whole event."""
+    detection = doc.get("detection")
+    if not isinstance(detection, dict):
+        return False
+    return all(
+        all(
+            isinstance(item, dict)
+            for item in (body if isinstance(body, list) else [body])
+        )
+        for key, body in detection.items()
+        if key != "condition"
+    )
 
 
 def fields_read(doc: Dict[str, Any]) -> Set[str]:

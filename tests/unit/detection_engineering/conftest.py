@@ -199,6 +199,15 @@ def plain_row():
 
 
 @pytest.fixture
+def attack_and_benign(add_case, add_event, attack_row, plain_row):
+    case_id = add_case()
+    add_event(attack_row, case_id=case_id)
+    add_event(plain_row)
+    add_event(plain_row)
+    return case_id
+
+
+@pytest.fixture
 def client(db):
     from fastapi.testclient import TestClient
 

@@ -68,15 +68,6 @@ def test_a_pattern_with_too_many_wildcards_is_refused_by_name():
         )
 
 
-@pytest.fixture
-def attack_and_benign(add_case, add_event, attack_row, plain_row):
-    case_id = add_case()
-    add_event(attack_row, case_id=case_id)
-    add_event(plain_row)
-    add_event(plain_row)
-    return case_id
-
-
 @pytest.mark.database
 def test_a_replay_that_runs_past_its_time_says_so_and_proves_nothing(attack_and_benign):
     view = proposals.create(

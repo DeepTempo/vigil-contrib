@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field
 from core.auth.current_user import get_current_user
 from core.auth.permissions import deny_unless, missing_permission, permission_gate
 from core.detections.engineering import program, proposals, sigma_text, targets
-from core.detections.engineering.replay import DEFAULT_WINDOW_DAYS
+from core.detections.engineering.replay import (
+    DEFAULT_WINDOW_HOURS,
+    LONGEST_WINDOW_HOURS,
+    SHORTEST_WINDOW_HOURS,
+)
 from core.detections.overlay import Refused
 from core.llm.oneshot import NoProviderConfigured
 from core.routing import Auth, RouterMeta
@@ -104,7 +108,11 @@ class EditRequest(BaseModel):
 
 class ReplayRequest(BaseModel):
     event_ids: Optional[List[str]] = Field(default=None, max_length=2000)
-    window_days: int = Field(default=DEFAULT_WINDOW_DAYS, ge=1, le=365)
+    window_hours: int = Field(
+        default=DEFAULT_WINDOW_HOURS,
+        ge=SHORTEST_WINDOW_HOURS,
+        le=LONGEST_WINDOW_HOURS,
+    )
 
 
 class TuneRequest(BaseModel):
@@ -122,6 +130,12 @@ class ConvertRequest(BaseModel):
 
 class ReasonRequest(BaseModel):
     reason: str = Field(default="", max_length=2000)
+
+
+class PromoteRequest(ReasonRequest):
+    window_hours: Optional[int] = Field(
+        default=None, ge=SHORTEST_WINDOW_HOURS, le=LONGEST_WINDOW_HOURS
+    )
 
 
 class ThreatModelRequest(BaseModel):
@@ -212,10 +226,16 @@ def get_proposal(proposal_id: str, current_user: User = Depends(get_current_user
 
 
 @router.get("/proposals/{proposal_id}/shadow-report")
-def shadow_report(proposal_id: str, current_user: User = Depends(get_current_user)):
+def shadow_report(
+    proposal_id: str,
+    window_hours: Optional[int] = Query(
+        default=None, ge=SHORTEST_WINDOW_HOURS, le=LONGEST_WINDOW_HOURS
+    ),
+    current_user: User = Depends(get_current_user),
+):
     with _answers():
         _may_read_replay(current_user, proposal_id)
-        return proposals.shadow_report(proposal_id)
+        return proposals.shadow_report(proposal_id, window_hours)
 
 
 @router.post("/proposals/{proposal_id}/edit", dependencies=_WRITE)
@@ -251,7 +271,7 @@ def replay_proposal(
                 proposal_id,
                 current_user.username,
                 event_ids=body.event_ids,
-                window_days=body.window_days,
+                window_hours=body.window_hours,
             ),
         )
 
@@ -309,13 +329,15 @@ def shadow_proposal(
 @router.post("/proposals/{proposal_id}/live", dependencies=_WRITE)
 def promote_proposal(
     proposal_id: str,
-    body: ReasonRequest,
+    body: PromoteRequest,
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
         return _shown(
             current_user,
-            proposals.promote(proposal_id, current_user.username, body.reason),
+            proposals.promote(
+                proposal_id, current_user.username, body.reason, body.window_hours
+            ),
         )
 
 

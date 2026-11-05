@@ -427,7 +427,7 @@ def _replay_step(
     proposal: DetectionProposal,
     actor: str,
     event_ids: Optional[List[str]],
-    window_days: int,
+    window_hours: int,
 ) -> bool:
     if proposal.state not in (ProposalState.LINTED, ProposalState.REPLAYED):
         raise InvalidProposalMove(proposal.state, ProposalState.REPLAYED)
@@ -437,7 +437,7 @@ def _replay_step(
         case_id=proposal.case_id,
         technique=proposal.technique,
         event_ids=event_ids,
-        window_days=window_days,
+        window_hours=window_hours,
     )
     evidence = {
         "step": "replay",
@@ -456,13 +456,13 @@ def replay(
     actor: str,
     *,
     event_ids: Optional[List[str]] = None,
-    window_days: int = replay_mod.DEFAULT_WINDOW_DAYS,
+    window_hours: int = replay_mod.DEFAULT_WINDOW_HOURS,
 ) -> Dict[str, Any]:
     with unit_of_work() as session:
         proposal = _locked(session, proposal_id)
         previous = _latest_step(_events(session, proposal), "replay")
         named = event_ids or (previous.evidence.get("event_ids") if previous else None)
-        _replay_step(session, proposal, actor, named or None, window_days)
+        _replay_step(session, proposal, actor, named or None, window_hours)
         return _view(session, proposal)
 
 
@@ -507,8 +507,8 @@ def tune(
                 proposal,
                 actor,
                 event_ids or None,
-                (before.evidence.get("window_days") if before else None)
-                or replay_mod.DEFAULT_WINDOW_DAYS,
+                (before.evidence.get("window_hours") if before else None)
+                or replay_mod.DEFAULT_WINDOW_HOURS,
             )
         return _view(session, proposal)
 
@@ -658,21 +658,29 @@ def shadow(proposal_id: str, actor: str, reason: str = "") -> Dict[str, Any]:
         return _view(session, proposal)
 
 
-def shadow_report(proposal_id: str) -> Dict[str, Any]:
+def shadow_report(
+    proposal_id: str, window_hours: Optional[int] = None
+) -> Dict[str, Any]:
     """The rule on rows that arrived since shadow began: Vigil's only shadow measure."""
     with unit_of_work() as session:
         proposal = session.get(DetectionProposal, proposal_id)
         if proposal is None:
             raise NotFound(f"No proposal {proposal_id}.")
-        return _shadow_measure(session, proposal)
+        return _shadow_measure(session, proposal, window_hours)
 
 
-def _shadow_measure(session: Session, proposal: DetectionProposal) -> Dict[str, Any]:
+def _shadow_measure(
+    session: Session, proposal: DetectionProposal, window_hours: Optional[int]
+) -> Dict[str, Any]:
     entered = _shadow_entered(_events(session, proposal))
     if entered is None:
         return {"evaluated": False, "reason": "This rule has not entered shadow."}
     return replay_mod.since(
-        session, proposal.sigma, entered=entered, case_id=proposal.case_id
+        session,
+        proposal.sigma,
+        entered=entered,
+        case_id=proposal.case_id,
+        window_hours=window_hours,
     )
 
 
@@ -681,7 +689,9 @@ def _shadow_entered(events: List[DetectionProposalEvent]) -> Optional[datetime]:
     return event.at if event else None
 
 
-def promote(proposal_id: str, actor: str, reason: str) -> Dict[str, Any]:
+def promote(
+    proposal_id: str, actor: str, reason: str, window_hours: Optional[int] = None
+) -> Dict[str, Any]:
     """Shadow to live: a person's decision, with what shadow measured on the record."""
     channel = _person_channel()
     if not reason.strip():
@@ -694,12 +704,12 @@ def promote(proposal_id: str, actor: str, reason: str) -> Dict[str, Any]:
         entered = _latest_step(events, "shadow")
         if entered is None or entered.sigma != proposal.sigma:
             raise Refused("This text never entered shadow. Move it there first.")
-        measured = _shadow_measure(session, proposal)
+        measured = _shadow_measure(session, proposal, window_hours)
         if measured.get("truncated"):
             raise Refused(
                 f"Shadow has read only the newest {measured['rows_checked']} of "
-                f"{measured['rows']} rows stored since it began, so it cannot say this rule "
-                "is quiet. Tune the rule to begin a shorter shadow."
+                f"{measured['rows']} {measured['rows_named']} in this window, so it cannot "
+                f"say this rule is quiet. {measured['advice']}"
             )
         stages = [
             promote_overlay_rule(
@@ -729,7 +739,11 @@ def promote(proposal_id: str, actor: str, reason: str) -> Dict[str, Any]:
 def _shadow_proof(measured: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
         "evaluated",
+        "began",
         "since",
+        "window_hours",
+        "scoped",
+        "rows_stored",
         "rows",
         "rows_checked",
         "truncated",

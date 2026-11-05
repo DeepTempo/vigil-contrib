@@ -199,7 +199,7 @@ function LintStep({ proposal, canWrite, busy, run, setView }: StepProps & { setV
       {!event.judges_current_text && <span className="x1-muted" style={{ fontSize: 12 }}>This result judged an earlier version of the rule.</span>}
       <div className="x1-row">
         {canWrite && proposal.state === 'draft' && <button type="button" className="btn primary" disabled={busy} onClick={() => run(() => detectionsApi.lint(proposal.proposal_id))}>Run lint again</button>}
-        {canWrite && proposal.state === 'linted' && <button type="button" className="btn primary" disabled={busy} onClick={() => run(() => detectionsApi.replay(proposal.proposal_id, 30), 'replay')}>Replay on stored events</button>}
+        {canWrite && proposal.state === 'linted' && <button type="button" className="btn primary" disabled={busy} onClick={() => run(() => detectionsApi.replay(proposal.proposal_id, 30 * 24), 'replay')}>Replay on stored events</button>}
         {proposal.state === 'draft' && <button type="button" className="btn ghost" onClick={() => setView('draft')}>Edit the rule</button>}
       </div>
     </div>
@@ -223,15 +223,26 @@ function SampleTable({ title, rows }: { title: string; rows: EventSample[] }) {
   )
 }
 
+function windowText(hours: number): string {
+  const [count, unit] = hours % 24 === 0 ? [hours / 24, 'day'] : [hours, 'hour']
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
+}
+
 function ReplayStep({ proposal, canWrite, busy, run, setView }: StepProps & { setView: (s: Step) => void }) {
-  const [windowDays, setWindowDays] = useState(30)
+  const [windowCount, setWindowCount] = useState(30)
+  const [windowUnit, setWindowUnit] = useState<'hours' | 'days'>('days')
+  const windowHours = windowUnit === 'days' ? windowCount * 24 : windowCount
   const event = proposal.latest.replay
   const evidence = event?.evidence
   const replayable = proposal.state === 'linted' || proposal.state === 'replayed'
   const action = canWrite && replayable && (
     <div className="x1-row">
-      <label className="x1-muted" style={{ fontSize: 12 }}>Other rows from the last <input className="de-text" style={{ width: 70, display: 'inline-block' }} type="number" min={1} max={365} value={windowDays} onChange={(e) => setWindowDays(Number(e.target.value) || 30)} /> days</label>
-      <button type="button" className="btn primary" disabled={busy} onClick={() => run(() => detectionsApi.replay(proposal.proposal_id, windowDays))}>{event ? 'Replay again' : 'Replay on stored events'}</button>
+      <label className="x1-muted" style={{ fontSize: 12 }}>Other rows from the last <input className="de-text" style={{ width: 70, display: 'inline-block' }} type="number" min={1} value={windowCount} onChange={(e) => setWindowCount(Number(e.target.value) || 1)} data-testid="de-replay-window" /></label>
+      <select className="de-text" style={{ width: 'auto' }} aria-label="Window unit" value={windowUnit} onChange={(e) => setWindowUnit(e.target.value as 'hours' | 'days')} data-testid="de-replay-window-unit">
+        <option value="hours">hours</option>
+        <option value="days">days</option>
+      </select>
+      <button type="button" className="btn primary" disabled={busy} onClick={() => run(() => detectionsApi.replay(proposal.proposal_id, windowHours))}>{event ? 'Replay again' : 'Replay on stored events'}</button>
     </div>
   )
   if (!evidence) return <div className="x1-card" style={{ display: 'grid', gap: 8 }}><span className="x1-muted">Replay has not run. It needs a rule that passed lint, and events on the Logs screen.</span>{action}</div>
@@ -249,7 +260,7 @@ function ReplayStep({ proposal, canWrite, busy, run, setView }: StepProps & { se
     <div style={{ display: 'grid', gap: 12 }} data-testid="de-replay">
       <div className="x1-grid3">
         <Stat value={<span className={`de-big ${(evidence.hits ?? 0) > 0 ? 'good' : 'bad'}`}>{evidence.hits}/{evidence.attack_rows}</span>} label={`attack rows matched (${evidence.attack_basis})`} />
-        <Stat value={<span className={`de-big ${falsePositives ? 'bad' : 'good'}`}>{falsePositives}/{evidence.benign_rows}</span>} label={`other rows matched, last ${evidence.window_days} days${evidence.benign_truncated ? ', newest rows only' : ''}`} />
+        <Stat value={<span className={`de-big ${falsePositives ? 'bad' : 'good'}`}>{falsePositives}/{evidence.benign_rows}</span>} label={`${evidence.benign_scope === 'holding_fields' ? 'rows holding a field the rule reads' : 'other rows'} matched, last ${windowText(evidence.window_hours ?? 0)}${evidence.benign_truncated ? ', newest rows only' : ''}`} />
         <Stat value={evidence.benign_rows_holding_fields ?? 0} label="of those rows hold a field the rule reads" />
       </div>
       <div className={`x1-card ${evidence.proven ? '' : 'x1-note'}`}>
@@ -445,18 +456,20 @@ function Stages({ proposal }: { proposal: Proposal }) {
 function ShadowReportCard({ report }: { report: ShadowReport | null }) {
   if (!report) return null
   if (!report.evaluated) return <Note>{report.reason}</Note>
+  const start = when(report.since)
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="x1-grid3" data-testid="de-shadow-report">
-        <Stat value={report.rows ?? 0} label={`rows stored since ${when(report.since)}`} />
+        <Stat value={report.rows ?? 0} label={report.scoped ? `rows holding a field this rule reads, of ${report.rows_stored} stored since ${start}` : `rows stored since ${start}`} />
         <Stat value={report.matches ?? 0} label={report.truncated ? `the rule would have matched in the newest ${report.rows_checked} rows` : 'the rule would have matched'} />
         <Stat value={report.matches_unclaimed ?? 0} label="of those are on rows no case claims" />
       </div>
-      {report.rows === 0 && <Note>No events have arrived since shadow began, so this measures nothing yet.</Note>}
+      {report.window_hours != null && <Note>Measuring the last {windowText(report.window_hours)} of a shadow that began {when(report.began)}.</Note>}
+      {report.rows === 0 && <Note>{report.rows_stored ? 'No event in this window holds a field this rule reads, so this measures nothing yet.' : 'No events have arrived in this window, so this measures nothing yet.'}</Note>}
       {report.truncated && (
         <div className="x1-card x1-note" data-testid="de-shadow-truncated">
           <b style={{ color: 'var(--tx0)' }}>Read the newest {report.rows_checked} of {report.rows} rows.</b>{' '}
-          The rest were not measured, so this rule cannot go live from this shadow. Tune it to begin a shorter one.
+          The rest were not measured, so this rule cannot go live on this measure. {report.advice}
         </div>
       )}
       <SampleTable title="Rows the rule would have matched" rows={report.samples ?? []} />
@@ -464,14 +477,32 @@ function ShadowReportCard({ report }: { report: ShadowReport | null }) {
   )
 }
 
-function useShadowReport(proposal: Proposal): ShadowReport | null {
+function useShadowReport(proposal: Proposal, windowHours: number | null = null): ShadowReport | null {
   const [report, setReport] = useState<ShadowReport | null>(null)
   const reached = proposal.state === 'shadow'
   useEffect(() => {
     if (!reached) return
-    detectionsApi.shadowReport(proposal.proposal_id).then(setReport).catch(() => setReport(null))
-  }, [reached, proposal.proposal_id])
+    let gone = false
+    detectionsApi.shadowReport(proposal.proposal_id, windowHours).then(
+      (next) => { if (!gone) setReport(next) },
+      () => { if (!gone) setReport(null) },
+    )
+    return () => { gone = true }
+  }, [reached, proposal.proposal_id, windowHours])
   return report
+}
+
+/** A person's choice to measure only the end of a shadow too busy to read whole. */
+function ShadowWindow({ windowHours, choose }: { windowHours: number | null; choose: (hours: number | null) => void }) {
+  const [hours, setHours] = useState('6')
+  const asked = Number(hours)
+  return (
+    <div className="x1-row" data-testid="de-shadow-window">
+      <label className="x1-muted" style={{ fontSize: 12 }}>Measure only the last <input className="de-text" style={{ width: 70, display: 'inline-block' }} type="number" min={1} value={hours} onChange={(e) => setHours(e.target.value)} /> hours</label>
+      <button type="button" className="btn ghost" disabled={!Number.isInteger(asked) || asked < 1} onClick={() => choose(asked)}>Measure this window</button>
+      {windowHours != null && <button type="button" className="x1-link" onClick={() => choose(null)}>Measure the whole shadow</button>}
+    </div>
+  )
 }
 
 function ShadowStep({ proposal, canWrite, busy, run }: StepProps) {
@@ -485,21 +516,24 @@ function ShadowStep({ proposal, canWrite, busy, run }: StepProps) {
       )}
       {!['converted', 'shadow', 'live'].includes(proposal.state) && <span className="x1-muted">A rule reaches shadow after it converts.</span>}
       <ShadowReportCard report={report} />
+      {report?.truncated && <span className="x1-muted">The Live step is where you choose a window.</span>}
       <Stages proposal={proposal} />
     </div>
   )
 }
 
 function LiveStep({ proposal, canWrite, busy, run }: StepProps) {
-  const report = useShadowReport(proposal)
+  const [windowHours, setWindowHours] = useState<number | null>(null)
+  const report = useShadowReport(proposal, windowHours)
   const live = proposal.latest.live
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM, so loading and enabling it there stays with you. A staged rollout to a small group of hosts does not exist.</Note>
       {live && <div className="x1-card" data-testid="de-live">Promoted by <b>{live.actor}</b>, {when(live.at)}. {live.reason}</div>}
       {proposal.state === 'shadow' && <ShadowReportCard report={report} />}
+      {proposal.state === 'shadow' && canWrite && (report?.truncated || windowHours != null) && <ShadowWindow windowHours={windowHours} choose={setWindowHours} />}
       {proposal.state === 'shadow' && canWrite && !report?.truncated && (
-        <StageAction label="Promote to live" id={proposal.proposal_id} busy={busy} run={run} action={detectionsApi.live} then="live" requireReason
+        <StageAction label="Promote to live" id={proposal.proposal_id} busy={busy} run={run} action={(id, reason) => detectionsApi.live(id, reason, windowHours)} then="live" requireReason
           note="What shadow measured goes on the record with your name and reason. It needs you signed in as a person." />
       )}
       {!['shadow', 'live'].includes(proposal.state) && <span className="x1-muted">A rule reaches live from shadow.</span>}

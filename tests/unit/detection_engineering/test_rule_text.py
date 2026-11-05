@@ -2,8 +2,7 @@
 
 import pytest
 
-from core.detections.engineering import lint, sigma_text
-from core.detections.engineering import targets
+from core.detections.engineering import lint, replay, sigma_text, targets
 from core.detections.engineering.targets import convert, sigma_error
 from core.detections.replay import replay_sigma
 
@@ -51,6 +50,57 @@ def test_a_field_no_stored_event_has_is_named_but_does_not_block():
     assert fields["passed"] is False and "ParentImage" in fields["detail"]
 
 
+def _merge_bomb(depth):
+    lines = ["a0: &a0 {x: 1}"]
+    for n in range(1, depth):
+        lines.append(f"a{n}: &a{n} {{<<: [*a{n - 1}, *a{n - 1}]}}")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _merge_bomb(14),
+        RULE + "copy: &one {a: 1}\nagain: *one\n",
+        RULE + "merged: {<<: {a: 1}}\n",
+        "[" * 50_000,
+        "a:\n" + "".join(" " * i + "b:\n" for i in range(1, 2000)),
+    ],
+    ids=["merge bomb", "alias", "merge key", "deep flow", "deep block"],
+)
+def test_yaml_that_multiplies_or_nests_without_bound_is_refused_before_it_is_loaded(
+    text,
+):
+    assert sigma_text.unsafe_because(text)
+    assert sigma_text.parse(text) is None
+    assert sigma_text.fill_in(text, None) == (text, [])
+    report = lint.lint_rule(text, None)
+    assert report["passed"] is False
+    assert report["checks"][0]["name"] == "Written out in full"
+    with pytest.raises(replay.NotReplayable, match="does not expand or nest"):
+        replay.matcher_for(text)
+
+
+def test_a_rule_with_a_literal_merge_like_value_or_normal_depth_still_parses():
+    text = RULE + "note: 'keep <<: this and &that *there'\n"
+    assert sigma_text.unsafe_because(text) is None
+    assert sigma_text.parse(text)["note"].startswith("keep")
+
+
+def test_a_filled_in_or_tuned_rule_stays_free_of_aliases():
+    text, _ = sigma_text.fill_in(RULE, "T1059.001")
+    tuned = sigma_text.add_exclusion(
+        text, sigma_text.Exclusion("User", "contains", ("svc",))
+    )
+    assert sigma_text.unsafe_because(tuned) is None
+
+
+def test_a_missing_field_says_how_far_the_read_went():
+    report = lint.lint_rule(RULE, {"Image", "CommandLine"})
+    detail = _checks(report)["Reads fields this install logs"]["detail"]
+    assert detail == "Absent from the newest 2,000 stored events: ParentImage."
+
+
 def test_structure_is_blocking_and_advice_is_not():
     assert lint.lint_rule("title: only a title\n", None)["passed"] is False
     bare = "title: x\nlogsource: {product: windows}\ndetection: {a: {b: c}, condition: a}\n"
@@ -67,8 +117,8 @@ def test_an_exclusion_narrows_every_condition_and_replays_as_a_person_expects(
     )
     tuned = sigma_text.add_exclusion(RULE, exclusion)
     assert replay_sigma(RULE, [attack_row], [signed_macro_row])["ruled_out_matched"]
-    replay = replay_sigma(tuned, [attack_row], [signed_macro_row])
-    assert replay["matched"] is True and replay["ruled_out_matched"] is False
+    result = replay_sigma(tuned, [attack_row], [signed_macro_row])
+    assert result["matched"] is True and result["ruled_out_matched"] is False
 
     again = sigma_text.add_exclusion(
         tuned, sigma_text.Exclusion("Image", "endswith", ("\\calc.exe",))

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Set
 
 from core.detections.engineering import sigma_text
+from core.detections.engineering.replay import absent_from_sample
 from core.detections.engineering.targets import PYSIGMA_MISSING, sigma_error
 from core.detections.lint import lint_sigma
 
@@ -78,12 +79,16 @@ def _fields_logged(doc: Dict[str, Any], logged: Optional[Set[str]]) -> Check:
         return Check(name, None, False, "log_events holds no rows, so this is unknown.")
     absent = sorted(read - logged)
     if absent:
-        return Check(name, False, False, f"No stored event has {', '.join(absent)}.")
+        return Check(name, False, False, absent_from_sample(absent))
     return Check(name, True, False)
 
 
 def lint_rule(text: str, logged: Optional[Set[str]]) -> Dict[str, Any]:
     """Every check on ``text``. ``logged`` is the fields log_events holds, None when empty."""
+    unsafe = sigma_text.unsafe_because(text)
+    if unsafe:
+        check = Check("Written out in full", False, True, unsafe)
+        return {"passed": False, "checks": [asdict(check)], "findings": []}
     doc = sigma_text.parse(text)
     vigil = lint_sigma(rule_yaml=text)
     checks = [

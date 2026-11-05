@@ -343,6 +343,10 @@ def test_rule_health_names_each_problem_where_it_is_known(
     assert rows["Off in Kibana"]["health"] == "disabled"
     assert rows["Reads an unlogged field"]["health"] == "missing_field"
     assert rows["Reads an unlogged field"]["missing_fields"] == ["Sha256"]
+    assert (
+        rows["Reads an unlogged field"]["why"]
+        == "Absent from the newest 2,000 stored events: Sha256."
+    )
     assert rows["Reads a logged field"]["health"] == "fires"
     assert rows["Reads a logged field"]["fires"] == 1
     assert rows["No technique"]["health"] == "never_fired"
@@ -587,3 +591,17 @@ def test_seen_counts_each_technique_in_the_database(client, admin):
         event.remove(engine, "after_cursor_execute", count)
     assert seen == {"T1059": 2000}
     assert sum(fetched) < 20
+
+
+def test_a_replay_window_is_hours_and_a_promotion_can_name_one(client, admin):
+    made = _post(client, "/proposals", {"sigma": RULE})
+    pid = made["proposal_id"]
+    _post(client, f"/proposals/{pid}/lint")
+    _post(client, f"/proposals/{pid}/replay", {"window_hours": 0}, status=422)
+    _post(
+        client, f"/proposals/{pid}/live", {"reason": "x", "window_hours": 0}, status=422
+    )
+    assert (
+        client.get(f"{BASE}/proposals/{pid}/shadow-report?window_hours=0").status_code
+        == 422
+    )

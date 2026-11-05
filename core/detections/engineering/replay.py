@@ -4,6 +4,9 @@ Attack rows are the ones a person names, else the case's rows, else rows labelle
 rule's technique. Benign rows are every other row no case claims: Vigil assumes they are normal,
 so a false positive here may be a real attack nobody linked, and evidence says so.
 
+Benign and shadow rows are read only where the rule could match them, so rows of other shapes on a
+busy install use up none of a read's cap.
+
 Vigil's own evaluator runs first. A rule it refuses (``|cidr``, ``|gt``, ``|exists``) falls back
 to the condition tree pySigma parses, ported from the detection write-back tool, when pySigma is
 installed. That tree never runs a rule with ``|re``: the write-back tool needs a child process
@@ -18,7 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from core.detections.engineering import sigma_text
@@ -30,8 +33,12 @@ MAX_ATTACK_ROWS = 2000
 MAX_BENIGN_ROWS = 5000
 MAX_FIELD_SAMPLE_ROWS = 2000
 SAMPLES = 20
-DEFAULT_WINDOW_DAYS = 30
+DEFAULT_WINDOW_HOURS = 30 * 24
+SHORTEST_WINDOW_HOURS = 1
+LONGEST_WINDOW_HOURS = 365 * 24
 MAX_WILDCARDS = 32
+# A dotted field can be nested in 2 ** dots ways. Past this a rule's rows are not narrowed.
+MAX_FIELD_DOTS = 5
 MAX_MATCH_SECONDS = 20
 
 _COLUMNS = (
@@ -55,6 +62,10 @@ Matcher = Callable[[Dict[str, Any]], bool]
 
 class NotReplayable(Exception):
     """The rule cannot be evaluated; the message names the construct."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _flatten(record: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
@@ -87,6 +98,13 @@ def logged_fields(session: Session) -> Optional[Set[str]]:
     for row in rows:
         fields.update(_flatten(row.raw or {}))
     return fields
+
+
+def absent_from_sample(fields: Iterable[str]) -> str:
+    return (
+        f"Absent from the newest {MAX_FIELD_SAMPLE_ROWS:,} stored events: "
+        f"{', '.join(fields)}."
+    )
 
 
 def _wildcard_matcher(
@@ -269,6 +287,9 @@ def _tree_matcher(text: str, refused_because: str) -> Matcher:
 
 def matcher_for(text: str) -> Tuple[Matcher, str]:
     """A row test for ``text`` and which engine made it."""
+    unsafe = sigma_text.unsafe_because(text)
+    if unsafe:
+        raise NotReplayable(unsafe)
     try:
         return _compile_rule(text), "vigil"
     except _Unevaluable as exc:
@@ -292,6 +313,53 @@ def _matching(matcher: Matcher, rows: Iterable[LogEvent]) -> List[LogEvent]:
     except (_Unevaluable, RecursionError, ValueError) as exc:
         raise NotReplayable(str(exc)) from None
     return matched
+
+
+def _nestings(parts: List[str]) -> Iterable[Tuple[str, ...]]:
+    """Every raw path ``_flatten`` turns into these dotted parts, as a source's keys may hold dots."""
+    for cut in range(1, len(parts) + 1):
+        head = ".".join(parts[:cut])
+        if cut == len(parts):
+            yield (head,)
+        else:
+            for rest in _nestings(parts[cut:]):
+                yield (head, *rest)
+
+
+def _holds_field(name: str) -> ColumnElement:
+    held = [
+        func.jsonb_extract_path(LogEvent.raw, *path).is_not(None)
+        for path in _nestings(name.split("."))
+    ]
+    if name in _COLUMNS:
+        held.append(getattr(LogEvent, name).is_not(None))
+    return or_(*held)
+
+
+def _rows_that_can_match(text: str, matcher: Matcher) -> Optional[ColumnElement]:
+    """Rows holding a field the rule reads, or None when a row without them could match too.
+
+    A rule made only of field maps sees a row holding none of its fields as it sees an empty
+    event. So when an empty event does not match, no such row can.
+    """
+    doc = sigma_text.parse(text) or {}
+    fields = sigma_text.fields_read(doc)
+    if (
+        not fields
+        or not sigma_text.names_every_field(doc)
+        or any(name.count(".") > MAX_FIELD_DOTS for name in fields)
+    ):
+        return None
+    try:
+        if matcher(dict.fromkeys(_COLUMNS)):
+            return None
+    except (_Unevaluable, NotReplayable, RecursionError, ValueError):
+        return None
+    return or_(*(_holds_field(name) for name in sorted(fields)))
+
+
+def _rows_named(scope: Optional[ColumnElement]) -> str:
+    return "rows" if scope is None else "rows holding a field the rule reads"
 
 
 def _holding(rows: Iterable[LogEvent], fields: Set[str]) -> int:
@@ -341,6 +409,7 @@ def _benign_rows(
     since: datetime,
     technique: Optional[str],
     attack_ids: Set[str],
+    scope: Optional[ColumnElement],
 ) -> Tuple[List[LogEvent], bool]:
     statement = (
         select(LogEvent)
@@ -348,6 +417,8 @@ def _benign_rows(
         .order_by(LogEvent.time.desc())
         .limit(MAX_BENIGN_ROWS + len(attack_ids) + 1)
     )
+    if scope is not None:
+        statement = statement.where(scope)
     if technique:
         statement = statement.where(
             or_(LogEvent.mitre.is_(None), LogEvent.mitre != technique)
@@ -363,10 +434,9 @@ def run(
     case_id: Optional[str],
     technique: Optional[str],
     event_ids: Optional[List[str]] = None,
-    window_days: int = DEFAULT_WINDOW_DAYS,
+    window_hours: int = DEFAULT_WINDOW_HOURS,
 ) -> Dict[str, Any]:
     """The replay's evidence. ``evaluated`` False carries ``reason`` and no counts."""
-    now = datetime.now(timezone.utc)
     if session.scalar(select(LogEvent.event_id).limit(1)) is None:
         return {
             "evaluated": False,
@@ -376,8 +446,13 @@ def run(
         matcher, engine = matcher_for(text)
         attack, basis = _attack_rows(session, case_id, technique, event_ids)
         attack_ids = {row.event_id for row in attack}
+        scope = _rows_that_can_match(text, matcher)
         benign, truncated = _benign_rows(
-            session, now - timedelta(days=window_days), technique, attack_ids
+            session,
+            _now() - timedelta(hours=window_hours),
+            technique,
+            attack_ids,
+            scope,
         )
         hits = _matching(matcher, attack)
         false_positives = _matching(matcher, benign)
@@ -387,7 +462,11 @@ def run(
     holding = _holding(benign, sigma_text.fields_read(doc))
     proven = bool(hits) and not false_positives and holding > 0 and not truncated
     unproven_because = (
-        None if proven else _why_unproven(attack, hits, false_positives, truncated)
+        None
+        if proven
+        else _why_unproven(
+            attack, hits, false_positives, truncated, window_hours, scope
+        )
     )
     return {
         "evaluated": True,
@@ -399,9 +478,10 @@ def run(
         "benign_rows": len(benign),
         "benign_rows_holding_fields": holding,
         "benign_truncated": truncated,
+        "benign_scope": "all_rows" if scope is None else "holding_fields",
         "false_positives": len(false_positives),
         "false_positive_samples": [_sample(r) for r in false_positives[:SAMPLES]],
-        "window_days": window_days,
+        "window_hours": window_hours,
         "event_ids": event_ids or [],
         "proven": proven,
         "unproven_because": unproven_because,
@@ -413,6 +493,8 @@ def _why_unproven(
     hits: List[LogEvent],
     false_positives: List[LogEvent],
     truncated: bool,
+    window_hours: int,
+    scope: Optional[ColumnElement],
 ) -> str:
     if not attack:
         return "No attack rows to test against. Link events to the case or name them."
@@ -421,11 +503,30 @@ def _why_unproven(
     if false_positives:
         return "The rule matched rows no case claims."
     if truncated:
+        read = (
+            f"Only the newest {MAX_BENIGN_ROWS} {_rows_named(scope)} of this window were "
+            "read, so zero matches says nothing about the rest."
+        )
+        if window_hours > SHORTEST_WINDOW_HOURS:
+            return f"{read} Replay a shorter window, down to one hour."
         return (
-            f"Only the newest {MAX_BENIGN_ROWS} rows of this window were read, so zero "
-            "matches says nothing about the rest. Replay a shorter window."
+            f"{read} One hour is the shortest window, so replay cannot prove this rule on this "
+            "install. Converting it anyway takes a written reason."
         )
     return "No benign row holds a field the rule reads, so zero matches proves nothing."
+
+
+def _shadow_advice(window_hours: Optional[int]) -> str:
+    if window_hours is not None and window_hours <= SHORTEST_WINDOW_HOURS:
+        return (
+            "One hour is the shortest window, so Vigil cannot measure this rule at this volume "
+            "and it cannot go live from here. Edit it to read rarer fields, which begins a new "
+            "shadow, or reject it."
+        )
+    return (
+        "Measure a shorter window, down to one hour. What you measured goes on the record "
+        "with your name."
+    )
 
 
 def since(
@@ -434,16 +535,33 @@ def since(
     *,
     entered: datetime,
     case_id: Optional[str],
+    window_hours: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """What the rule would have matched on rows that arrived since it entered shadow."""
+    """What the rule would have matched on rows that arrived since it entered shadow.
+
+    ``window_hours`` is a person's choice to measure only the end of the shadow.
+    """
+    start = entered
+    if window_hours is not None:
+        start = max(entered, _now() - timedelta(hours=window_hours))
+    in_window = LogEvent.time >= start
     try:
         matcher, engine = matcher_for(text)
-        total = session.scalar(
-            select(func.count()).select_from(LogEvent).where(LogEvent.time >= entered)
+        scope = _rows_that_can_match(text, matcher)
+        measured = in_window if scope is None else and_(in_window, scope)
+        stored = session.scalar(
+            select(func.count()).select_from(LogEvent).where(in_window)
+        )
+        total = (
+            stored
+            if scope is None
+            else session.scalar(
+                select(func.count()).select_from(LogEvent).where(measured)
+            )
         )
         rows = session.scalars(
             select(LogEvent)
-            .where(LogEvent.time >= entered)
+            .where(measured)
             .order_by(LogEvent.time.desc())
             .limit(MAX_BENIGN_ROWS)
         ).all()
@@ -451,13 +569,20 @@ def since(
     except NotReplayable as exc:
         return {"evaluated": False, "reason": str(exc)}
     in_case = [r for r in matched if case_id and r.case_id == case_id]
+    truncated = total > len(rows)
     return {
         "evaluated": True,
         "engine": engine,
-        "since": entered.isoformat(),
+        "began": entered.isoformat(),
+        "since": start.isoformat(),
+        "window_hours": window_hours,
+        "scoped": scope is not None,
+        "rows_named": _rows_named(scope),
+        "rows_stored": stored,
         "rows": total,
         "rows_checked": len(rows),
-        "truncated": total > len(rows),
+        "truncated": truncated,
+        "advice": _shadow_advice(window_hours) if truncated else None,
         "matches": len(matched),
         "matches_in_case": len(in_case),
         "matches_unclaimed": sum(1 for r in matched if r.case_id is None),
