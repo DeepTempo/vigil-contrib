@@ -644,3 +644,19 @@ def test_many_brackets_in_plain_text_are_not_taken_for_json():
     notes = Counter()
     assert _stored({"message": message}, notes)["raw"]["message"] == message
     assert notes == Counter()
+
+
+def test_a_row_past_the_try_budget_also_reports_its_redacted_credential():
+    notes = Counter()
+    _stored({"message": "{} " * 64 + '{"a":1}', "password": "dummy"}, notes)
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1, NOTE_REDACTED: 1})
+
+
+def test_a_row_replaced_for_both_bounds_is_reported_once():
+    notes = Counter()
+    record = {
+        "message": "{} " * 64 + '{"a":1}',
+        "other": '{"a":"' + "x" * (MAX_EMBEDDED_JSON_CHARS + 1) + '"}',
+    }
+    _stored(record, notes)
+    assert notes == Counter({NOTE_JSON_TOO_LARGE: 1})

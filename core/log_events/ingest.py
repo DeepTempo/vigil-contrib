@@ -755,6 +755,10 @@ def _redacted(value: Any, depth: int = 0) -> Any:
     return value
 
 
+def _gained(marker: str, before: Any, after: Any) -> bool:
+    return str(after).count(marker) > str(before).count(marker)
+
+
 def _flatten(record: Mapping[str, Any]) -> Dict[str, Any]:
     """Every value by its lower-cased dotted path. A literal dotted key, as Zeek writes, stays as it is."""
     flat: Dict[str, Any] = {}
@@ -907,12 +911,10 @@ def normalize(
         raise Dropped(DROP_NOT_OBJECT)
     cleaned = _clean(record)
     checkable = _with_large_json_replaced(cleaned)
-    if checkable != cleaned:
-        notes[NOTE_JSON_TOO_LARGE] += 1
     raw = _redacted(checkable)
-    if str(raw).count(TOO_LARGE_TO_CHECK) > str(checkable).count(TOO_LARGE_TO_CHECK):
+    if checkable != cleaned or _gained(TOO_LARGE_TO_CHECK, checkable, raw):
         notes[NOTE_JSON_TOO_LARGE] += 1
-    elif raw != checkable:
+    if _gained(REDACTED, checkable, raw):
         notes[NOTE_REDACTED] += 1
     identity = {
         k: v for k, v in raw.items() if k.lower() not in (*SCORE_FIELDS, *CASE_FIELDS)
