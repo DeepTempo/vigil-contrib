@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from core.detections.engineering import sigma_text
 from core.detections.engineering.targets import PYSIGMA_MISSING, pysigma_installed
-from core.detections.tools import _compile_rule, _Unevaluable
+from core.detections.replay import _compile_rule, _Unevaluable
 from core.storage.models import LogEvent
 
 MAX_ATTACK_ROWS = 2000

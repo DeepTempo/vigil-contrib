@@ -5,7 +5,7 @@ import pytest
 from core.detections.engineering import lint, sigma_text
 from core.detections.engineering import targets
 from core.detections.engineering.targets import convert, sigma_error
-from core.detections.tools import _replay_sigma
+from core.detections.replay import replay_sigma
 
 from .conftest import RULE
 
@@ -66,8 +66,8 @@ def test_an_exclusion_narrows_every_condition_and_replays_as_a_person_expects(
         "ParentCommandLine", "contains", ("trusted-macros",)
     )
     tuned = sigma_text.add_exclusion(RULE, exclusion)
-    assert _replay_sigma(RULE, [attack_row], [signed_macro_row])["ruled_out_matched"]
-    replay = _replay_sigma(tuned, [attack_row], [signed_macro_row])
+    assert replay_sigma(RULE, [attack_row], [signed_macro_row])["ruled_out_matched"]
+    replay = replay_sigma(tuned, [attack_row], [signed_macro_row])
     assert replay["matched"] is True and replay["ruled_out_matched"] is False
 
     again = sigma_text.add_exclusion(
