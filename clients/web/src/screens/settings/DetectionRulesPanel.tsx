@@ -36,6 +36,10 @@ const EMPTY_SOURCE: AddSourcePayload = {
 
 const fmtNum = (n: number) => n.toLocaleString()
 
+// A person's promotion through a detection proposal queues no run, only the rollout sweep does.
+const deployTargetHelp = (format: string) =>
+  `When one of Vigil's ${formatName(format)} rules goes live on its own after a quiet week, an agent opens a pull request adding it here; it waits for approval. A rule a person promotes through a detection proposal opens none.`
+
 // Formats whose live overlay rules Vigil offers to a customer git repo by pull request.
 const DEPLOY_FORMATS = ['splunk', 'elastic']
 const deployable = (s: DetectionSource) => s.type === 'git' && DEPLOY_FORMATS.includes(s.format)
@@ -180,7 +184,7 @@ export default function DetectionRulesPanel({ notify }: SectionProps) {
                       )}
                     </td>
                     <td>{formatName(s.format)}</td>
-                    <td title={deployable(s) ? `When one of Vigil's ${formatName(s.format)} rules goes live, an agent opens a pull request adding it here; it waits for approval.` : undefined}>
+                    <td title={deployable(s) ? deployTargetHelp(s.format) : undefined}>
                       {deployable(s) && (
                         <Toggle
                           checked={!!s.deploy_target}
@@ -245,7 +249,7 @@ export default function DetectionRulesPanel({ notify }: SectionProps) {
           {formDeployable && (
             <ToggleRow
               label="Deploy target"
-              hint={`When one of Vigil's ${formatName(form.format)} rules goes live, an agent opens a pull request adding it here.`}
+              hint={deployTargetHelp(form.format)}
               checked={!!form.deploy_target}
               onChange={(v) => setForm({ ...form, deploy_target: v })}
             />

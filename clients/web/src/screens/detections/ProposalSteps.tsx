@@ -528,7 +528,7 @@ function LiveStep({ proposal, canWrite, busy, run }: StepProps) {
   const live = proposal.latest.live
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM, so loading and enabling it there stays with you. With Elasticsearch connected, Vigil runs the live Elastic copy itself and its hits become findings, and it moves a noisy copy back to shadow. A staged rollout to a small group of hosts does not exist.</Note>
+      <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM and opens no pull request to a deploy target, so loading and enabling it there stays with you. With Elasticsearch connected, Vigil runs the live Elastic copy itself and its hits become findings, and it moves a noisy copy back to shadow. Once an active Kibana rule runs this rule, Vigil stops running its own copy and Kibana's takes over. A staged rollout to a small group of hosts does not exist.</Note>
       {live && <div className="x1-card" data-testid="de-live">Promoted by <b>{live.actor}</b>, {when(live.at)}. {live.reason}</div>}
       {proposal.state === 'shadow' && <ShadowReportCard report={report} />}
       {proposal.state === 'shadow' && canWrite && (report?.truncated || windowHours != null) && <ShadowWindow windowHours={windowHours} choose={setWindowHours} />}
