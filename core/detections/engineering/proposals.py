@@ -238,6 +238,62 @@ def listing(state: Optional[str] = None) -> List[Dict[str, Any]]:
         ]
 
 
+def replay_proves(evidence: Dict[str, Any]) -> bool:
+    """A replay that read only part of its window proved nothing, whatever it stored."""
+    return bool(evidence.get("proven")) and not evidence.get("benign_truncated")
+
+
+_SAMPLE_KEYS = frozenset({"hit_samples", "false_positive_samples", "samples"})
+
+
+def _without_finding_content(value: Any) -> Any:
+    if isinstance(value, dict):
+        kept: Dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _SAMPLE_KEYS:
+                kept[key] = []
+                kept["samples_withheld"] = True
+            elif key == "finding_id":
+                kept[key] = None
+            else:
+                kept[key] = _without_finding_content(item)
+        return kept
+    if isinstance(value, list):
+        return [_without_finding_content(item) for item in value]
+    return value
+
+
+def _without_case(value: Any, case_id: str) -> Any:
+    if isinstance(value, dict):
+        return {k: _without_case(item, case_id) for k, item in value.items()}
+    if isinstance(value, list):
+        return [_without_case(item, case_id) for item in value]
+    return value.replace(case_id, "a case") if isinstance(value, str) else value
+
+
+def shown_to(
+    view: Dict[str, Any], *, reads_findings: bool, reads_cases: bool
+) -> Dict[str, Any]:
+    """A proposal as this reader may see it. Rows of logs and findings need findings.read, and
+    which case a rule came from needs cases.read."""
+    case_id = view.get("case_id")
+    if not reads_findings:
+        view = _without_finding_content(view)
+    if case_id and not reads_cases:
+        view = {**_without_case(view, case_id), "case_id": None}
+        if isinstance(view.get("origin"), dict):
+            view["origin"] = {**view["origin"], "case_id": None}
+    return view
+
+
+def case_of(proposal_id: str) -> Optional[str]:
+    with unit_of_work() as session:
+        proposal = session.get(DetectionProposal, proposal_id)
+        if proposal is None:
+            raise NotFound(f"No proposal {proposal_id}.")
+        return proposal.case_id
+
+
 def _latest_replays(session: Session, ids: List[str]) -> Dict[str, Dict[str, Any]]:
     rows = session.execute(
         select(DetectionProposalEvent.proposal_id, DetectionProposalEvent.evidence)
@@ -257,6 +313,7 @@ def _latest_replays(session: Session, ids: List[str]) -> Dict[str, Dict[str, Any
                 "attack_rows",
                 "false_positives",
                 "benign_rows",
+                "benign_truncated",
                 "proven",
             )
         }
@@ -457,7 +514,14 @@ def tune(
 
 
 def _counts(evidence: Dict[str, Any]) -> Dict[str, Any]:
-    keys = ("hits", "attack_rows", "false_positives", "benign_rows", "proven")
+    keys = (
+        "hits",
+        "attack_rows",
+        "false_positives",
+        "benign_rows",
+        "benign_truncated",
+        "proven",
+    )
     return {key: evidence.get(key) for key in keys}
 
 
@@ -490,7 +554,7 @@ def convert(
         replayed = _current_replay(_events(session, proposal), proposal.sigma)
         if replayed is None:
             raise Refused("Replay this text before converting it.")
-        if not replayed.get("proven") and not accept_reason.strip():
+        if not replay_proves(replayed) and not accept_reason.strip():
             raise Refused(
                 "The replay did not prove this rule: "
                 f"{replayed.get('unproven_because')} Tune it, or give a reason to go on.",
@@ -631,6 +695,12 @@ def promote(proposal_id: str, actor: str, reason: str) -> Dict[str, Any]:
         if entered is None or entered.sigma != proposal.sigma:
             raise Refused("This text never entered shadow. Move it there first.")
         measured = _shadow_measure(session, proposal)
+        if measured.get("truncated"):
+            raise Refused(
+                f"Shadow has read only the newest {measured['rows_checked']} of "
+                f"{measured['rows']} rows stored since it began, so it cannot say this rule "
+                "is quiet. Tune the rule to begin a shorter shadow."
+            )
         stages = [
             promote_overlay_rule(
                 rule_id,
@@ -657,7 +727,16 @@ def promote(proposal_id: str, actor: str, reason: str) -> Dict[str, Any]:
 
 
 def _shadow_proof(measured: Dict[str, Any]) -> Dict[str, Any]:
-    keys = ("evaluated", "since", "rows", "matches", "matches_unclaimed", "reason")
+    keys = (
+        "evaluated",
+        "since",
+        "rows",
+        "rows_checked",
+        "truncated",
+        "matches",
+        "matches_unclaimed",
+        "reason",
+    )
     return {key: measured.get(key) for key in keys if key in measured}
 
 
@@ -880,7 +959,7 @@ def proven_rules() -> List[Dict[str, Any]]:
             event = _latest_step(_events(session, proposal), "replay")
             if event is None or event.sigma != proposal.sigma:
                 continue
-            if event.evidence.get("proven") and _still_this_rule(session, proposal):
+            if replay_proves(event.evidence) and _still_this_rule(session, proposal):
                 out.append(
                     {
                         "proposal_id": proposal.proposal_id,

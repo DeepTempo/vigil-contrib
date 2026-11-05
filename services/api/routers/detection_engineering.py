@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from core.auth.current_user import get_current_user
-from core.auth.permissions import permission_gate
+from core.auth.permissions import deny_unless, missing_permission, permission_gate
 from core.detections.engineering import program, proposals, sigma_text, targets
 from core.detections.engineering.replay import DEFAULT_WINDOW_DAYS
 from core.detections.overlay import Refused
@@ -30,6 +30,32 @@ ROUTER_META = RouterMeta(
 )
 
 _WRITE = [permission_gate("detections.write")]
+_READ_FINDINGS = "findings.read"
+_READ_CASES = "cases.read"
+
+
+def _require(user: User, *permissions: str) -> None:
+    for permission in permissions:
+        deny_unless(user.user_id, permission)
+
+
+def _may_read_replay(user: User, proposal_id: str) -> None:
+    """A replay reports log rows, and on a case's rule it reads that case's rows."""
+    _require(user, _READ_FINDINGS)
+    if proposals.case_of(proposal_id):
+        _require(user, _READ_CASES)
+
+
+def _reads(user: User, permission: str) -> bool:
+    return missing_permission(user.user_id, permission) is None
+
+
+def _shown(user: User, view: Dict[str, Any]) -> Dict[str, Any]:
+    return proposals.shown_to(
+        view,
+        reads_findings=_reads(user, _READ_FINDINGS),
+        reads_cases=_reads(user, _READ_CASES),
+    )
 
 
 @contextmanager
@@ -109,8 +135,12 @@ class RedTeamRequest(BaseModel):
 
 
 @router.get("/proposals")
-def list_proposals(state: Optional[ProposalState] = Query(default=None)):
-    return {"proposals": proposals.listing(state.value if state else None)}
+def list_proposals(
+    state: Optional[ProposalState] = Query(default=None),
+    current_user: User = Depends(get_current_user),
+):
+    rows = proposals.listing(state.value if state else None)
+    return {"proposals": [_shown(current_user, row) for row in rows]}
 
 
 @router.post("/proposals", dependencies=_WRITE)
@@ -120,14 +150,21 @@ def paste_proposal(body: PasteRequest, current_user: User = Depends(get_current_
         "case_id": body.case_id,
         "finding_id": body.finding_id,
     }
+    if body.case_id:
+        _require(current_user, _READ_CASES)
+    if body.finding_id:
+        _require(current_user, _READ_FINDINGS)
     with _answers():
-        return proposals.create(
-            sigma=body.sigma,
-            actor=current_user.username,
-            title=body.title,
-            technique=body.technique,
-            case_id=body.case_id,
-            origin=origin,
+        return _shown(
+            current_user,
+            proposals.create(
+                sigma=body.sigma,
+                actor=current_user.username,
+                title=body.title,
+                technique=body.technique,
+                case_id=body.case_id,
+                origin=origin,
+            ),
         )
 
 
@@ -135,14 +172,21 @@ def paste_proposal(body: PasteRequest, current_user: User = Depends(get_current_
 async def draft_proposal(
     body: DraftRequest, current_user: User = Depends(get_current_user)
 ):
+    if body.case_id:
+        _require(current_user, _READ_CASES, _READ_FINDINGS)
+    if body.finding_id:
+        _require(current_user, _READ_FINDINGS)
     with _answers():
         try:
-            return await proposals.draft_from_model(
-                actor=current_user.username,
-                case_id=body.case_id,
-                finding_id=body.finding_id,
-                technique=body.technique,
-                notes=body.notes,
+            return _shown(
+                current_user,
+                await proposals.draft_from_model(
+                    actor=current_user.username,
+                    case_id=body.case_id,
+                    finding_id=body.finding_id,
+                    technique=body.technique,
+                    notes=body.notes,
+                ),
             )
         except NoProviderConfigured as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -151,18 +195,21 @@ async def draft_proposal(
 @router.post("/proposals/from-rule", dependencies=_WRITE)
 def prove_rule(body: FromRuleRequest, current_user: User = Depends(get_current_user)):
     with _answers():
-        return proposals.from_rule(body.rule_id, current_user.username)
+        return _shown(
+            current_user, proposals.from_rule(body.rule_id, current_user.username)
+        )
 
 
 @router.get("/proposals/{proposal_id}")
-def get_proposal(proposal_id: str):
+def get_proposal(proposal_id: str, current_user: User = Depends(get_current_user)):
     with _answers():
-        return proposals.get(proposal_id)
+        return _shown(current_user, proposals.get(proposal_id))
 
 
 @router.get("/proposals/{proposal_id}/shadow-report")
-def shadow_report(proposal_id: str):
+def shadow_report(proposal_id: str, current_user: User = Depends(get_current_user)):
     with _answers():
+        _may_read_replay(current_user, proposal_id)
         return proposals.shadow_report(proposal_id)
 
 
@@ -173,15 +220,16 @@ def edit_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.edit(
-            proposal_id, body.sigma, current_user.username, body.reason
+        return _shown(
+            current_user,
+            proposals.edit(proposal_id, body.sigma, current_user.username, body.reason),
         )
 
 
 @router.post("/proposals/{proposal_id}/lint", dependencies=_WRITE)
 def lint_proposal(proposal_id: str, current_user: User = Depends(get_current_user)):
     with _answers():
-        return proposals.lint(proposal_id, current_user.username)
+        return _shown(current_user, proposals.lint(proposal_id, current_user.username))
 
 
 @router.post("/proposals/{proposal_id}/replay", dependencies=_WRITE)
@@ -191,11 +239,15 @@ def replay_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.replay(
-            proposal_id,
-            current_user.username,
-            event_ids=body.event_ids,
-            window_days=body.window_days,
+        _may_read_replay(current_user, proposal_id)
+        return _shown(
+            current_user,
+            proposals.replay(
+                proposal_id,
+                current_user.username,
+                event_ids=body.event_ids,
+                window_days=body.window_days,
+            ),
         )
 
 
@@ -210,8 +262,10 @@ def tune_proposal(
     except sigma_text.NotARule as exc:
         raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
     with _answers():
-        return proposals.tune(
-            proposal_id, exclusion, current_user.username, body.reason
+        _may_read_replay(current_user, proposal_id)
+        return _shown(
+            current_user,
+            proposals.tune(proposal_id, exclusion, current_user.username, body.reason),
         )
 
 
@@ -222,12 +276,15 @@ def convert_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.convert(
-            proposal_id,
-            current_user.username,
-            wanted=body.targets,
-            pasted=body.pasted,
-            accept_reason=body.accept_reason,
+        return _shown(
+            current_user,
+            proposals.convert(
+                proposal_id,
+                current_user.username,
+                wanted=body.targets,
+                pasted=body.pasted,
+                accept_reason=body.accept_reason,
+            ),
         )
 
 
@@ -238,7 +295,10 @@ def shadow_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.shadow(proposal_id, current_user.username, body.reason)
+        return _shown(
+            current_user,
+            proposals.shadow(proposal_id, current_user.username, body.reason),
+        )
 
 
 @router.post("/proposals/{proposal_id}/live", dependencies=_WRITE)
@@ -248,7 +308,10 @@ def promote_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.promote(proposal_id, current_user.username, body.reason)
+        return _shown(
+            current_user,
+            proposals.promote(proposal_id, current_user.username, body.reason),
+        )
 
 
 @router.post("/proposals/{proposal_id}/reject", dependencies=_WRITE)
@@ -258,7 +321,10 @@ def reject_proposal(
     current_user: User = Depends(get_current_user),
 ):
     with _answers():
-        return proposals.reject(proposal_id, current_user.username, body.reason)
+        return _shown(
+            current_user,
+            proposals.reject(proposal_id, current_user.username, body.reason),
+        )
 
 
 @router.get("/targets")
@@ -306,14 +372,20 @@ def put_threat_model(
 
 
 @router.get("/red-team")
-def get_red_team():
-    return program.red_team_runs()
+def get_red_team(current_user: User = Depends(get_current_user)):
+    runs = program.red_team_runs()
+    return (
+        runs
+        if _reads(current_user, _READ_FINDINGS)
+        else program.without_citations(runs)
+    )
 
 
 @router.post("/red-team", dependencies=_WRITE)
 async def post_red_team(
     body: RedTeamRequest, current_user: User = Depends(get_current_user)
 ):
+    _require(current_user, _READ_FINDINGS)
     with _answers():
         return await program.run_red_team(
             name=body.name,

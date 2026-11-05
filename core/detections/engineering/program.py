@@ -5,6 +5,7 @@ One install is one client. Each answer reads what is stored and says what it can
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -13,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from core.detections.engineering import proposals, sigma_text
 from core.detections.engineering.replay import logged_fields
-from core.detections.gaps import read_alert_labels
 from core.detections.inventory import catalog
 from core.detections.inventory.readers import OVERLAY_SOURCE
 from core.detections.reconstruction import (
@@ -30,6 +30,7 @@ from core.storage.models import (
     DetectionRule,
     DetectionRuleVersion,
     Finding,
+    FindingMitrePrediction,
     LogEvent,
 )
 from core.storage.models.detection_proposal import ProposalState
@@ -65,12 +66,14 @@ _TACTIC_NAMES = {name.lower(): name for name in TACTIC_ORDER}
 
 THREAT_MODEL_FIELDS = ("sector", "crown_jewels", "exposure", "advisories", "notes")
 
-# What a detection engineer asks of a client's logs. Matched on stored source and class names.
+# What a detection engineer asks of a client's logs. Matched as whole words of stored source and
+# class names. "authentication" and "process" are absent: every Windows host logs those classes,
+# and they say nothing about an identity provider or an EDR.
 LOG_KINDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Windows events", ("winsec", "windows", "wineventlog", "sysmon")),
-    ("Process and EDR", ("sysmon", "edr", "crowdstrike", "defender", "process")),
+    ("Process and EDR", ("sysmon", "edr", "crowdstrike", "defender")),
     ("Linux syslog", ("syslog", "linux", "auditd")),
-    ("Identity", ("entra", "okta", "active directory", "authentication", "ldap")),
+    ("Identity", ("entra", "okta", "active directory", "ldap")),
     ("Firewall", ("firewall", "paloalto", "fortinet", "pfsense")),
     ("Network flow", ("zeek", "flow", "network activity", "netflow")),
     ("DNS", ("dns",)),
@@ -181,20 +184,14 @@ def _tactic_of(technique: str, declared: Dict[str, str]) -> Tuple[str, str]:
 def _seen(session: Session) -> Dict[str, int]:
     """How often each technique was seen, on stored alerts and on stored log rows."""
     seen: Dict[str, int] = {}
-    for labels in read_alert_labels().by_alert.values():
-        for label in labels:
+    for column in (FindingMitrePrediction.technique_id, LogEvent.mitre):
+        rows = session.execute(
+            select(column, func.count()).where(column.is_not(None)).group_by(column)
+        )
+        for label, count in rows:
             value = str(label).strip().upper()
             if sigma_text.TECHNIQUE_ID.match(value):
-                seen[value] = seen.get(value, 0) + 1
-    rows = session.execute(
-        select(LogEvent.mitre, func.count())
-        .where(LogEvent.mitre.is_not(None))
-        .group_by(LogEvent.mitre)
-    )
-    for label, count in rows:
-        value = str(label).strip().upper()
-        if sigma_text.TECHNIQUE_ID.match(value):
-            seen[value] = seen.get(value, 0) + count
+                seen[value] = seen.get(value, 0) + count
     return seen
 
 
@@ -282,7 +279,8 @@ def _summary(rows: List[Dict[str, Any]], priorities: Set[str]) -> Dict[str, Any]
         "basis": basis,
         "counted": len(counted),
         "counted_validated": validated,
-        "percent_validated": round(100 * validated / len(counted)) if counted else None,
+        # Rounded down, so 100 means every one of them.
+        "percent_validated": 100 * validated // len(counted) if counted else None,
     }
 
 
@@ -401,6 +399,13 @@ def rule_health() -> Dict[str, Any]:
     }
 
 
+def _whole_words(*names: str) -> str:
+    """Names padded with spaces, so a test for `` word `` cannot match inside another word."""
+    return " ".join(
+        ["", *(" ".join(re.findall(r"[a-z0-9]+", name.lower())) for name in names), ""]
+    )
+
+
 def log_sources() -> Dict[str, Any]:
     """Configured federation sources, and what log_events actually holds."""
     configured = [
@@ -435,17 +440,20 @@ def log_sources() -> Dict[str, Any]:
         for source, event_class, count, first, last in rows
     ]
     haystack = [
-        (f"{row['source']} {row['event_class']}".lower(), row["rows"]) for row in stored
+        (_whole_words(row["source"], row["event_class"]), row["rows"]) for row in stored
     ]
-    configured_text = " ".join(row["source_id"].lower() for row in configured)
+    configured_words = [_whole_words(row["source_id"]) for row in configured]
     kinds = []
     for kind, words in LOG_KINDS:
-        held = sum(n for text, n in haystack if any(word in text for word in words))
+        wanted = [f" {word} " for word in words]
+        held = sum(n for text, n in haystack if any(w in text for w in wanted))
         kinds.append(
             {
                 "kind": kind,
                 "rows": held,
-                "configured": any(word in configured_text for word in words),
+                "configured": any(
+                    w in text for text in configured_words for w in wanted
+                ),
             }
         )
     return {
@@ -560,3 +568,17 @@ def _remember_run(run: Dict[str, Any], actor: str) -> None:
 def red_team_runs() -> Dict[str, Any]:
     stored = get_config_service().get_system_config(RED_TEAM_KEY) or {}
     return {"runs": list(stored.get("runs") or [])}
+
+
+def without_citations(runs: Dict[str, Any]) -> Dict[str, Any]:
+    """A step cites the findings it joined to, which need findings.read."""
+    return {
+        "runs": [
+            {
+                **run,
+                "steps": [{**step, "citations": []} for step in run.get("steps") or []],
+                "citations_withheld": True,
+            }
+            for run in runs["runs"]
+        ]
+    }

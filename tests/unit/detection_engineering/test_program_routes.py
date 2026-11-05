@@ -491,3 +491,99 @@ def test_a_viewer_can_read_a_proposal_but_not_move_it(client, admin):
     client.app.dependency_overrides[get_current_user] = lambda: viewer
     assert _get(client, f"/proposals/{pid}")["state"] == "draft"
     assert client.post(f"{BASE}/proposals/{pid}/lint").status_code == 403
+
+
+def _kinds(client):
+    return {kind["kind"]: kind for kind in _get(client, "/log-sources")["kinds"]}
+
+
+def test_a_windows_sign_in_log_does_not_paint_identity_or_edr(
+    client, admin, add_event, plain_row
+):
+    add_event(plain_row, source="winsec", event_class="Authentication")
+    add_event(plain_row, source="winsec", event_class="Process")
+    kinds = _kinds(client)
+    assert kinds["Windows events"]["rows"] == 2
+    assert kinds["Identity"]["rows"] == 0
+    assert kinds["Process and EDR"]["rows"] == 0
+
+
+def test_a_log_kind_matches_a_whole_word_of_a_source_or_class(
+    client, admin, add_event, plain_row
+):
+    add_event(plain_row, source="dnsmasq-logs", event_class="Other")
+    add_event(plain_row, source="mailroom", event_class="Other")
+    add_event(plain_row, source="palo-flow", event_class="Other")
+    add_event(plain_row, source="x", event_class="DNS Activity")
+    add_event(plain_row, source="y", event_class="Network Activity")
+    add_event(plain_row, source="okta", event_class="Other")
+    kinds = _kinds(client)
+    assert kinds["DNS"]["rows"] == 1
+    assert kinds["Mail"]["rows"] == 0
+    assert kinds["Network flow"]["rows"] == 2
+    assert kinds["Identity"]["rows"] == 1
+
+
+def test_a_configured_source_matches_as_a_whole_word_too(client, admin):
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO federation_sources (source_id, enabled) "
+                "VALUES ('microsoft_defender', true), ('mailguard', true)"
+            )
+        )
+    kinds = _kinds(client)
+    assert kinds["Process and EDR"]["configured"] is True
+    assert kinds["Mail"]["configured"] is False
+
+
+@pytest.mark.parametrize(
+    "validated, counted, percent",
+    [(199, 200, 99), (1, 3, 33), (2, 3, 66), (200, 200, 100), (0, 5, 0)],
+)
+def test_percent_validated_rounds_down_and_is_100_only_when_all_are(
+    validated, counted, percent
+):
+    from core.detections.engineering.program import _summary
+
+    rows = [
+        {"state": "validated" if i < validated else "unproven", "priority": False}
+        for i in range(counted)
+    ]
+    assert _summary(rows, set())["percent_validated"] == percent
+
+
+def test_seen_counts_each_technique_in_the_database(client, admin):
+    from sqlalchemy import event
+
+    from core.detections.engineering.program import _seen
+    from core.storage.connection import get_db_manager
+
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO findings (finding_id, title, data_source, severity, timestamp) "
+                "SELECT 'seen-' || g, 'Seen', 'sample', 'low', now() "
+                "FROM generate_series(1, 2000) g"
+            )
+        )
+        session.execute(
+            text(
+                "INSERT INTO finding_mitre_predictions (finding_id, technique_id) "
+                "SELECT 'seen-' || g, 'T1059' FROM generate_series(1, 2000) g"
+            )
+        )
+    fetched = []
+
+    def count(_conn, cursor, _statement, _params, _context, _many):
+        fetched.append(max(cursor.rowcount, 0))
+
+    engine = get_db_manager().engine
+    event.listen(engine, "after_cursor_execute", count)
+    try:
+        with unit_of_work() as session:
+            seen = _seen(session)
+    finally:
+        event.remove(engine, "after_cursor_execute", count)
+    assert seen == {"T1059": 2000}
+    assert sum(fetched) < 20

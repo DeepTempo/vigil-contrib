@@ -260,6 +260,7 @@ function ReplayStep({ proposal, canWrite, busy, run, setView }: StepProps & { se
           {!event?.judges_current_text ? ' This result judged an earlier version of the rule.' : ''}
         </p>
       </div>
+      {evidence.samples_withheld && <Note>The rows themselves are hidden. Reading them needs permission to read findings.</Note>}
       <SampleTable title="Other rows the rule matched" rows={evidence.false_positive_samples ?? []} />
       <SampleTable title="Attack rows the rule matched" rows={evidence.hit_samples ?? []} />
       <div className="x1-row">
@@ -448,10 +449,16 @@ function ShadowReportCard({ report }: { report: ShadowReport | null }) {
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="x1-grid3" data-testid="de-shadow-report">
         <Stat value={report.rows ?? 0} label={`rows stored since ${when(report.since)}`} />
-        <Stat value={report.matches ?? 0} label="the rule would have matched" />
+        <Stat value={report.matches ?? 0} label={report.truncated ? `the rule would have matched in the newest ${report.rows_checked} rows` : 'the rule would have matched'} />
         <Stat value={report.matches_unclaimed ?? 0} label="of those are on rows no case claims" />
       </div>
       {report.rows === 0 && <Note>No events have arrived since shadow began, so this measures nothing yet.</Note>}
+      {report.truncated && (
+        <div className="x1-card x1-note" data-testid="de-shadow-truncated">
+          <b style={{ color: 'var(--tx0)' }}>Read the newest {report.rows_checked} of {report.rows} rows.</b>{' '}
+          The rest were not measured, so this rule cannot go live from this shadow. Tune it to begin a shorter one.
+        </div>
+      )}
       <SampleTable title="Rows the rule would have matched" rows={report.samples ?? []} />
     </div>
   )
@@ -491,7 +498,7 @@ function LiveStep({ proposal, canWrite, busy, run }: StepProps) {
       <Note>Live never happens on its own. It records that a person approved this rule in Vigil. Vigil writes nothing to your SIEM, so loading and enabling it there stays with you. A staged rollout to a small group of hosts does not exist.</Note>
       {live && <div className="x1-card" data-testid="de-live">Promoted by <b>{live.actor}</b>, {when(live.at)}. {live.reason}</div>}
       {proposal.state === 'shadow' && <ShadowReportCard report={report} />}
-      {proposal.state === 'shadow' && canWrite && (
+      {proposal.state === 'shadow' && canWrite && !report?.truncated && (
         <StageAction label="Promote to live" id={proposal.proposal_id} busy={busy} run={run} action={detectionsApi.live} then="live" requireReason
           note="What shadow measured goes on the record with your name and reason. It needs you signed in as a person." />
       )}

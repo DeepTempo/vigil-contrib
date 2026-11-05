@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from core.detections.engineering import sigma_text
@@ -30,6 +31,8 @@ MAX_BENIGN_ROWS = 5000
 MAX_FIELD_SAMPLE_ROWS = 2000
 SAMPLES = 20
 DEFAULT_WINDOW_DAYS = 30
+MAX_WILDCARDS = 32
+MAX_MATCH_SECONDS = 20
 
 _COLUMNS = (
     "event_id",
@@ -86,6 +89,40 @@ def logged_fields(session: Session) -> Optional[Set[str]]:
     return fields
 
 
+def _wildcard_matcher(
+    parts: List[Tuple[str, int]], cased: bool, substring: bool
+) -> Callable[[str], bool]:
+    """Match wildcard segments in order. Each segment has no quantifier, so nothing can
+    backtrack: taking each one at its earliest place is enough to know whether all fit.
+
+    ``parts`` holds each segment's pattern and its length in characters.
+    """
+    flags = re.DOTALL | (0 if cased else re.IGNORECASE)
+    compiled = [re.compile(body, flags) for body, _ in parts]
+    first, *middle = compiled
+    last = middle.pop() if middle else None
+    last_length = parts[-1][1]
+
+    def matches(text: str) -> bool:
+        if last is None:
+            return bool(first.search(text) if substring else first.fullmatch(text))
+        found = first.search(text) if substring else first.match(text)
+        if found is None:
+            return False
+        position = found.end()
+        for segment in middle:
+            found = segment.search(text, position)
+            if found is None:
+                return False
+            position = found.end()
+        if substring:
+            return last.search(text, position) is not None
+        start = len(text) - last_length
+        return start >= position and last.fullmatch(text, start) is not None
+
+    return matches
+
+
 class _Tree:
     """Sigma's own semantics over the condition tree pySigma parses."""
 
@@ -94,7 +131,7 @@ class _Tree:
 
         self.c, self.t = conditions, types
         self.trees = [cond.parsed for cond in rule.detection.parsed_condition]
-        self.patterns: Dict[int, re.Pattern] = {}
+        self.patterns: Dict[int, Callable[[str], bool]] = {}
 
     def __call__(self, event: Dict[str, Any]) -> bool:
         return any(self._node(tree, event) for tree in self.trees)
@@ -132,25 +169,32 @@ class _Tree:
             self._value(value, v, event, True) for v in event.values() if v is not None
         )
 
-    def _pattern(self, s: Any, substring: bool) -> re.Pattern:
+    def _pattern(self, s: Any, substring: bool) -> Callable[[str], bool]:
         key = id(s) * 2 + substring
         pattern = self.patterns.get(key)
         if pattern is None:
             t = self.t
-            parts = []
+            parts: List[Tuple[str, int]] = [("", 0)]
+            wildcards = 0
             for p in s.s:
+                body, length = parts[-1]
                 if p is t.SpecialChars.WILDCARD_MULTI:
-                    parts.append(".*")
+                    wildcards += 1
+                    parts.append(("", 0))
                 elif p is t.SpecialChars.WILDCARD_SINGLE:
-                    parts.append(".")
+                    wildcards += 1
+                    parts[-1] = (f"{body}.", length + 1)
                 elif isinstance(p, str):
-                    parts.append(re.escape(p))
+                    parts[-1] = (body + re.escape(p), length + len(p))
                 else:
                     raise NotReplayable("a placeholder value needs a pipeline")
-            body = "".join(parts)
-            cased = isinstance(s, t.SigmaCasedString)
-            flags = re.DOTALL | (0 if cased else re.IGNORECASE)
-            pattern = re.compile(body if substring else f"^{body}\\Z", flags)
+            if wildcards > MAX_WILDCARDS:
+                raise NotReplayable(
+                    f"a value with more than {MAX_WILDCARDS} wildcards is not replayed"
+                )
+            pattern = _wildcard_matcher(
+                parts, isinstance(s, t.SigmaCasedString), substring
+            )
             self.patterns[key] = pattern
         return pattern
 
@@ -159,7 +203,7 @@ class _Tree:
     ) -> bool:
         t = self.t
         if isinstance(value, t.SigmaString):
-            return bool(self._pattern(value, substring).search(_text(actual)))
+            return self._pattern(value, substring)(_text(actual))
         if isinstance(value, t.SigmaBool):
             return _text(actual).lower() == ("true" if bool(value) else "false")
         if isinstance(value, t.SigmaNumber):
@@ -234,10 +278,20 @@ def matcher_for(text: str) -> Tuple[Matcher, str]:
 
 
 def _matching(matcher: Matcher, rows: Iterable[LogEvent]) -> List[LogEvent]:
+    deadline = time.monotonic() + MAX_MATCH_SECONDS
+    matched = []
     try:
-        return [row for row in rows if matcher(event_of(row))]
+        for row in rows:
+            if time.monotonic() > deadline:
+                raise NotReplayable(
+                    f"The rule took longer than {MAX_MATCH_SECONDS} seconds to evaluate, "
+                    "so this replay stopped. Simplify its wildcards."
+                )
+            if matcher(event_of(row)):
+                matched.append(row)
     except (_Unevaluable, RecursionError, ValueError) as exc:
         raise NotReplayable(str(exc)) from None
+    return matched
 
 
 def _holding(rows: Iterable[LogEvent], fields: Set[str]) -> int:
@@ -331,8 +385,10 @@ def run(
         return {"evaluated": False, "reason": str(exc)}
     doc = sigma_text.parse(text) or {}
     holding = _holding(benign, sigma_text.fields_read(doc))
-    proven = bool(hits) and not false_positives and holding > 0
-    unproven_because = None if proven else _why_unproven(attack, hits, false_positives)
+    proven = bool(hits) and not false_positives and holding > 0 and not truncated
+    unproven_because = (
+        None if proven else _why_unproven(attack, hits, false_positives, truncated)
+    )
     return {
         "evaluated": True,
         "engine": engine,
@@ -356,6 +412,7 @@ def _why_unproven(
     attack: List[LogEvent],
     hits: List[LogEvent],
     false_positives: List[LogEvent],
+    truncated: bool,
 ) -> str:
     if not attack:
         return "No attack rows to test against. Link events to the case or name them."
@@ -363,6 +420,11 @@ def _why_unproven(
         return "The rule matched none of the attack rows."
     if false_positives:
         return "The rule matched rows no case claims."
+    if truncated:
+        return (
+            f"Only the newest {MAX_BENIGN_ROWS} rows of this window were read, so zero "
+            "matches says nothing about the rest. Replay a shorter window."
+        )
     return "No benign row holds a field the rule reads, so zero matches proves nothing."
 
 
@@ -376,6 +438,9 @@ def since(
     """What the rule would have matched on rows that arrived since it entered shadow."""
     try:
         matcher, engine = matcher_for(text)
+        total = session.scalar(
+            select(func.count()).select_from(LogEvent).where(LogEvent.time >= entered)
+        )
         rows = session.scalars(
             select(LogEvent)
             .where(LogEvent.time >= entered)
@@ -390,7 +455,9 @@ def since(
         "evaluated": True,
         "engine": engine,
         "since": entered.isoformat(),
-        "rows": len(rows),
+        "rows": total,
+        "rows_checked": len(rows),
+        "truncated": total > len(rows),
         "matches": len(matched),
         "matches_in_case": len(in_case),
         "matches_unclaimed": sum(1 for r in matched if r.case_id is None),

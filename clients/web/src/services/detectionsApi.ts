@@ -60,6 +60,8 @@ export interface StepEvidence {
   benign_truncated?: boolean
   false_positives?: number
   false_positive_samples?: EventSample[]
+  /** The reader may not read findings, so the sample rows are empty. */
+  samples_withheld?: boolean
   window_days?: number
   proven?: boolean
   unproven_because?: string | null
@@ -131,7 +133,10 @@ export interface ShadowReport {
   evaluated: boolean
   reason?: string
   since?: string
+  /** Rows stored since shadow began, whether or not they were read. */
   rows?: number
+  rows_checked?: number
+  truncated?: boolean
   matches?: number
   matches_in_case?: number
   matches_unclaimed?: number
