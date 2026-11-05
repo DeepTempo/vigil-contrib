@@ -23,6 +23,7 @@ from core.ingestion.ingestion_service import _optional_float
 from core.integrations._base.config import resolve
 from core.integrations._base.ids import FINDING_ID_MAX, fit_id
 from core.integrations.crowdstrike.descriptor import CROWDSTRIKE
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,22 @@ class CrowdStrikeAdapter:
         return FetchResult(findings=findings, cursor=cursor_out or fresh_cursor())
 
 
+def crowdstrike_rule_id(detection: Dict[str, Any]) -> Optional[str]:
+    """The one detection pattern this fired on, else its scenario. Vendor fields, not text."""
+    patterns = {
+        str(pattern)
+        for pattern in (
+            detection.get("pattern_id"),
+            *(b.get("pattern_id") for b in detection.get("behaviors") or []),
+        )
+        if pattern not in (None, "")
+    }
+    if len(patterns) == 1:
+        return f"pattern:{next(iter(patterns))}"
+    scenario = detection.get("scenario")
+    return f"scenario:{scenario}" if scenario else None
+
+
 def _detection_to_finding(detection: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     detection_id = detection.get("detection_id", "")
     if not detection_id:
@@ -171,7 +188,9 @@ def _detection_to_finding(detection: Dict[str, Any]) -> Optional[Dict[str, Any]]
         "severity": severity,
         "title": detection.get("scenario") or "CrowdStrike Detection",
         "description": detection.get("description", ""),
-        "entity_context": entity_context,
+        "entity_context": with_source_rule(
+            entity_context, crowdstrike_rule_id(detection)
+        ),
         "raw_data": detection,
         "anomaly_score": _confidence_to_score(detection.get("max_confidence")),
         "mitre_predictions": mitre_predictions,

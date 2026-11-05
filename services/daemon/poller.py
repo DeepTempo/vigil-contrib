@@ -26,9 +26,13 @@ from core.config import get_settings
 from core.federation.runner import FederationRunner
 from core.ingestion.dedup import RedisDedupSet
 from core.integrations._base.ids import FINDING_ID_MAX, fit_id
-from core.integrations.crowdstrike.adapter import _confidence_to_score
+from core.integrations.crowdstrike.adapter import (
+    _confidence_to_score,
+    crowdstrike_rule_id,
+)
 from core.integrations.splunk.adapter import _splunk_event_to_finding
 from core.storage.service import _mitre_prediction_items
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 from core.webhook_rejections import (
     BAD_TOKEN,
@@ -561,7 +565,9 @@ class DataPoller:
             "severity": severity,
             "title": detection.get("scenario") or "CrowdStrike Detection",
             "description": detection.get("description", ""),
-            "entity_context": entity_context,
+            "entity_context": with_source_rule(
+                entity_context, crowdstrike_rule_id(detection)
+            ),
             "raw_data": detection,
             "anomaly_score": _confidence_to_score(detection.get("max_confidence")),
             "mitre_predictions": mitre_predictions,

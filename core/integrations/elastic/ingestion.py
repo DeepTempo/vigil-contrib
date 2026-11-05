@@ -22,6 +22,7 @@ from core.integrations._base.config_gap import (
 from core.integrations._base.ids import EXTERNAL_ID_MAX, FINDING_ID_MAX, fit_id
 from core.integrations.elastic.client import ElasticService
 from core.integrations.elastic.descriptor import ELASTIC
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -314,7 +315,12 @@ class ElasticIngestion(SIEMIngestionService):
                 "severity": severity,
                 "title": title,
                 "description": description[:500] if description else "",
-                "entity_context": entity_context,
+                "entity_context": with_source_rule(
+                    entity_context,
+                    source.get("kibana.alert.rule.uuid")
+                    or rule.get("id")
+                    or (source.get("rule") or {}).get("id"),
+                ),
                 "raw_data": alert,
                 "anomaly_score": None,
                 "mitre_predictions": mitre_predictions,
@@ -390,7 +396,7 @@ class ElasticIngestion(SIEMIngestionService):
             "severity": severity_for_rule_level(level),
             "title": title,
             "description": str(description)[:500],
-            "entity_context": entity_context,
+            "entity_context": with_source_rule(entity_context, rule.get("id")),
             "raw_data": alert,
             "anomaly_score": (
                 round(min(max(parsed_level, 0), 15) / 15, 2)

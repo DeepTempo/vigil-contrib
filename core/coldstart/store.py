@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from core.coldstart.baseline import Alert, miss_bound
+from core.coldstart.baseline import TRUE_POSITIVE, Alert, miss_bound
 from core.coldstart.tickets import Label, Ticket
 from core.storage.connection import get_db_manager
 from core.storage.models import ColdStartAlert, ColdStartOutcome, ColdStartRun
@@ -255,6 +255,89 @@ def load_alerts(run_id: str) -> List[Alert]:
             ).where(ColdStartAlert.run_id == run_id)
         ).all()
         return [_as_alert(row) for row in rows]
+
+
+def _ticket_kinds(wanted: str) -> str:
+    """Each ticket's kinds: one per alert it names that existed when it closed, else the kind it
+    carries when it names no alert the run holds, as ``outcomes_from`` links them."""
+    return f"""
+    SELECT a.signature, o.external_id, o.disposition, o.closed_at
+    FROM cold_start_outcomes o
+    CROSS JOIN LATERAL jsonb_array_elements_text(o.alert_ids) AS ref(alert_id)
+    JOIN cold_start_alerts a
+      ON a.run_id = o.run_id AND a.alert_id = ref.alert_id AND a.observed_at <= o.closed_at
+    WHERE o.run_id = :run_id AND {wanted}
+    UNION
+    SELECT o.signature, o.external_id, o.disposition, o.closed_at
+    FROM cold_start_outcomes o
+    WHERE o.run_id = :run_id AND {wanted} AND o.signature IS NOT NULL AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements_text(o.alert_ids) AS ref(alert_id)
+      JOIN cold_start_alerts a ON a.run_id = o.run_id AND a.alert_id = ref.alert_id
+    )
+    """
+
+
+def ticket_counts(session: Session, run_id: str, since: datetime) -> List[Any]:
+    """Per kind and disposition, how many tickets closed since then. One ticket counts
+    once per kind, however many of its alerts it names."""
+    kinds = _ticket_kinds("o.closed_at >= :since")
+    return session.execute(
+        sql_text(
+            "SELECT signature, disposition, count(*) AS tickets, "
+            f"max(closed_at) AS last_closed_at FROM ({kinds}) AS labelled "
+            "GROUP BY signature, disposition"
+        ),
+        {"run_id": run_id, "since": since},
+    ).all()
+
+
+def first_true_positive(
+    session: Session, run_id: str, signature: str, since: Optional[datetime]
+) -> Optional[Any]:
+    """The earliest true positive ticket of this kind, after a moment when one is given."""
+    kinds = _ticket_kinds(
+        "o.disposition = :disposition "
+        "AND (CAST(:since AS timestamptz) IS NULL OR o.closed_at > :since)"
+    )
+    return session.execute(
+        sql_text(
+            f"SELECT external_id, closed_at FROM ({kinds}) AS labelled "
+            "WHERE signature = :signature ORDER BY closed_at LIMIT 1"
+        ),
+        {
+            "run_id": run_id,
+            "signature": signature,
+            "disposition": TRUE_POSITIVE,
+            "since": since,
+        },
+    ).first()
+
+
+def kinds_marked_not_benign(session: Session, run_id: str) -> frozenset:
+    rows = session.execute(
+        sql_text(
+            "SELECT kind.signature FROM cold_start_runs run CROSS JOIN LATERAL jsonb_each("
+            "CASE jsonb_typeof(run.baseline -> 'signatures') "
+            "WHEN 'object' THEN run.baseline -> 'signatures' ELSE '{}'::jsonb END"
+            ") AS kind(signature, row) "
+            "WHERE run.run_id = :run_id AND kind.row ->> 'marked_not_benign' = 'true'"
+        ),
+        {"run_id": run_id},
+    )
+    return frozenset(row.signature for row in rows)
+
+
+def kind_marked_not_benign(session: Session, run_id: str, signature: str) -> bool:
+    return bool(
+        session.scalar(
+            sql_text(
+                "SELECT baseline -> 'signatures' -> :signature ->> 'marked_not_benign' "
+                "= 'true' FROM cold_start_runs WHERE run_id = :run_id"
+            ),
+            {"run_id": run_id, "signature": signature},
+        )
+    )
 
 
 def load_reviews(run_id: str) -> List[Tuple[str, str]]:

@@ -27,6 +27,7 @@ from sqlalchemy.orm import (
 
 from core.storage.ip_address import canonical_entity_context
 from core.storage.models.base import Base, case_findings
+from core.storage.source_rule import trusted_rule_only
 from core.time import utcnow
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class Finding(Base):
 
     @validates("entity_context")
     def _canonical_ips(self, _key, entity_context):
-        return canonical_entity_context(entity_context)
+        return canonical_entity_context(trusted_rule_only(entity_context))
 
     # Indexes
     __table_args__ = (

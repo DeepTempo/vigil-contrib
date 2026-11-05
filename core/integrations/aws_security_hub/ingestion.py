@@ -13,6 +13,7 @@ from core.ingestion.siem_ingestion_service import SIEMIngestionService
 from core.integrations._base.config import resolve
 from core.integrations._base.ids import EXTERNAL_ID_MAX, FINDING_ID_MAX, fit_id
 from core.integrations.aws_security_hub.descriptor import AWS_SECURITY_HUB
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ class AWSSecurityHubIngestion(SIEMIngestionService):
                 "data_source": "aws_security_hub",
                 "timestamp": alert.get("CreatedAt", utcnow().isoformat()),
                 "raw_data": alert,
+                "entity_context": with_source_rule(None, alert.get("GeneratorId")),
                 "metadata": {
                     "aws_account_id": alert.get("AwsAccountId"),
                     "generator_id": alert.get("GeneratorId"),

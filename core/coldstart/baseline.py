@@ -172,18 +172,21 @@ def parse_time(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+# The adapters write dest_ips; LogLM rows and older findings carry one value.
+_ENTITY_KINDS = (
+    ("user", ("usernames", "users", "user")),
+    ("ip", ("src_ips", "dst_ips", "dest_ips", "src_ip", "dst_ip")),
+    ("host", ("hostnames", "hosts", "hostname")),
+)
+ENTITY_KEYS = tuple(key for _, keys in _ENTITY_KINDS for key in keys)
+
+
 def _entities(finding: Mapping[str, Any]) -> FrozenSet[str]:
     context = finding.get("iocs") or finding.get("entity_context") or {}
     if not isinstance(context, Mapping):
         return frozenset()
-    # The adapters write dest_ips; LogLM rows and older findings carry one value.
-    kinds = (
-        ("user", ("usernames", "users", "user")),
-        ("ip", ("src_ips", "dst_ips", "dest_ips", "src_ip", "dst_ip")),
-        ("host", ("hostnames", "hosts", "hostname")),
-    )
     found = set()
-    for kind, keys in kinds:
+    for kind, keys in _ENTITY_KINDS:
         for key in keys:
             values = context.get(key) or []
             if isinstance(values, str):
@@ -229,6 +232,15 @@ def signature_of(source: str, title: str, entities: Iterable[str] = ()) -> str:
 
 def signature_for(alert: Alert) -> str:
     return signature_of(alert.source, alert.title, alert.entities)
+
+
+def stored_signature(source: Any, title: Any, entity_context: Any) -> str:
+    """The kind of a stored finding, from the three columns that decide it."""
+    return signature_of(
+        str(source or "unknown"),
+        str(title or "Untitled alert"),
+        _entities({"entity_context": entity_context}),
+    )
 
 
 def miss_bound(clean_labels: int) -> Optional[float]:

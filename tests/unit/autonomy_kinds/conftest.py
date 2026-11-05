@@ -13,6 +13,7 @@ SOURCE = "sample-edr"
 TITLE = "Sample scanner touched a share"
 ENTITIES = {"hostnames": ["wks-sample-1"]}
 PERSON = "person:ka-admin"
+RULE = "sample-rule-7"
 
 
 def pytest_collection_modifyitems(items):
@@ -164,8 +165,11 @@ def add_finding(
     noise_by=None,
     noise_kind=None,
     noise_reason=None,
+    rule=RULE,
+    entities=ENTITIES,
 ):
     from core.storage.models import Finding
+    from core.storage.source_rule import with_source_rule
     from core.storage.unit_of_work import unit_of_work
 
     moment = (at or NOW - timedelta(days=1)).replace(tzinfo=None)
@@ -177,7 +181,7 @@ def add_finding(
                 data_source=source,
                 severity=severity,
                 timestamp=moment,
-                entity_context=ENTITIES,
+                entity_context=with_source_rule(entities, rule),
                 noise_marked_at=noise_at.replace(tzinfo=None) if noise_at else None,
                 noise_marked_by=noise_by,
                 noise_marked_by_kind=noise_kind,
@@ -235,6 +239,8 @@ def earn(
     title=TITLE,
     severity="low",
     kind="person",
+    rule=RULE,
+    entities=ENTITIES,
 ):
     """People marking this kind noise one at a time, hours apart, so no burst drops them."""
     for i in range(count):
@@ -248,6 +254,8 @@ def earn(
             noise_at=at,
             noise_by="ka-closer",
             noise_kind=kind,
+            rule=rule,
+            entities=entities,
         )
 
 

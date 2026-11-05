@@ -5,22 +5,26 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from core.autonomy.track_record import (
+    ABOVE_SCOPE,
     POLICY_LIFETIME,
     POLICY_REASON_PREFIX,
     WINDOW,
     Adoption,
+    AlertTally,
     CaseClosure,
-    ImportedTicket,
+    ImportedTally,
     Label,
+    MarkedAlert,
     NoiseMark,
     Origin,
     Overturn,
     PolicyEventKind,
-    SeenAlert,
+    TrackRecord,
     Verdict,
     build_records,
     daily_counts,
     demotion_due,
+    is_vigil_close,
     stay_reason,
     why_not,
 )
@@ -29,6 +33,7 @@ pytestmark = pytest.mark.unit
 
 NOW = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
 KIND = "sample-edr|Sample scanner touched a share"
+RULE = "rule-1"
 
 
 def _closure(case_id, *, category="false_positive", channel="cookie", at=None, ids=()):
@@ -50,12 +55,19 @@ def _spaced(count):
     ]
 
 
-def _alert(finding_id="a", *, severity="low", mark=None, at=None):
-    return SeenAlert(finding_id, KIND, severity, at or NOW - timedelta(days=1), mark)
+def _alert(finding_id="a", *, severity="low", mark=None):
+    return (
+        AlertTally(
+            KIND, RULE, 1, int(severity in ABOVE_SCOPE), int(is_vigil_close(mark))
+        ),
+        MarkedAlert(finding_id, KIND, mark) if mark else None,
+    )
 
 
 def _records(alerts=(), closures=(), imported=(), overturns=(), **kw):
-    return build_records(alerts, closures, imported, overturns, NOW, **kw)
+    tallies = [AlertTally(KIND, RULE, 0), *(tally for tally, _ in alerts)]
+    marks = [mark for _, mark in alerts if mark]
+    return build_records(tallies, marks, closures, imported, overturns, NOW, **kw)
 
 
 def _rules(record):
@@ -165,22 +177,16 @@ def test_a_burst_of_closes_counts_for_nothing_but_a_real_one_in_it_still_counts(
 
 
 def test_imported_tickets_are_labels_kept_apart_from_closures_here():
-    tickets = [
-        ImportedTicket(KIND, f"t{i}", "benign_positive", NOW - timedelta(days=i + 1))
-        for i in range(58)
+    record = _records(closures=[_closure("c")], imported=[ImportedTally(KIND, 58)])[
+        KIND
     ]
-    # One ticket can name many alerts of a kind. It stays one label.
-    tickets += [
-        ImportedTicket(KIND, "t0", "benign_positive", NOW - timedelta(days=1)),
-    ]
-    record = _records(closures=[_closure("c")], imported=tickets)[KIND]
     assert (record.benign_here, record.imported_benign) == (1, 58)
     assert record.clean_labels == 59
     assert why_not(record) == []
 
 
 def test_an_imported_real_ticket_blocks():
-    tickets = [ImportedTicket(KIND, "t", "true_positive", NOW - timedelta(days=1))]
+    tickets = [ImportedTally(KIND, real=1, last_real_at=NOW - timedelta(days=1))]
     record = _records(closures=_spaced(59), imported=tickets)[KIND]
     assert record.imported_real == 1
     assert record.miss_bound is None
@@ -306,16 +312,55 @@ def test_what_keeps_an_alert_in_the_queue(over, source, stays):
 
 def test_daily_counts_split_what_a_policy_closed_from_what_people_got():
     today = NOW.date()
-    alerts = [
-        _alert("asked", at=NOW),
-        _alert("closed", at=NOW, mark=_vigil_mark()),
-        _alert("old", at=NOW - timedelta(days=30)),
+    rows = [
+        (today, False, 1),
+        (today, True, 1),
+        (today - timedelta(days=30), False, 1),
     ]
-    days = daily_counts(alerts, today, 3)
+    days = daily_counts(rows, today, 3)
     assert [d["day"] for d in days] == [
         (today - timedelta(days=2)).isoformat(),
         (today - timedelta(days=1)).isoformat(),
         today.isoformat(),
     ]
     assert days[-1] == {"day": today.isoformat(), "asked": 1, "closed": 1}
-    assert sum(d["asked"] + d["closed"] for d in days[:-1]) == 0
+
+
+def _tally(rule, seen=1):
+    return AlertTally(KIND, rule, seen)
+
+
+@pytest.mark.parametrize(
+    "tallies, says",
+    [
+        ([_tally(None, 3)], "Known only by its title"),
+        ([_tally("r1"), _tally("r2")], "2 different source rules"),
+        (
+            [_tally("r1"), _tally(None, 4)],
+            "4 alerts with this title name no source rule",
+        ),
+    ],
+)
+def test_a_kind_is_only_eligible_as_one_source_rule(tallies, says):
+    records = build_records(tallies, (), _spaced(59), (), (), NOW)
+    assert records[KIND].rule_id is None
+    reasons = why_not(records[KIND])
+    assert [r["rule"] for r in reasons] == ["one_source_rule"]
+    assert says in reasons[0]["why"]
+
+
+def test_one_source_rule_with_the_evidence_is_eligible():
+    records = build_records([_tally("r1", 9)], (), _spaced(59), (), (), NOW)
+    assert records[KIND].rule_id == "r1"
+    assert why_not(records[KIND]) == []
+
+
+def test_a_connectors_fallback_title_names_no_detection():
+    signature = "crowdstrike|CrowdStrike Detection"
+    record = TrackRecord(signature, benign_here=59, rule_ids={"pattern:1"})
+    assert [r["rule"] for r in why_not(record)] == ["names_a_detection"]
+
+
+def test_a_record_read_short_of_the_whole_install_cannot_be_adopted():
+    record = TrackRecord(KIND, benign_here=59, rule_ids={"r1"}, incomplete=True)
+    assert [r["rule"] for r in why_not(record)] == ["whole_record_read"]

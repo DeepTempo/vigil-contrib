@@ -20,6 +20,7 @@ from core.integrations._base.config_gap import (
 )
 from core.integrations._base.ids import FINDING_ID_MAX, fit_id
 from core.integrations.microsoft_defender.descriptor import MICROSOFT_DEFENDER
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,9 @@ class MicrosoftDefenderIngestion(SIEMIngestionService):
                 "severity": self.normalize_severity(alert.get("severity")),
                 "title": title,
                 "description": description,
-                "entity_context": entity_context,
+                "entity_context": with_source_rule(
+                    entity_context, alert.get("detectorId")
+                ),
                 "mitre_predictions": mitre_predictions,
             }
 

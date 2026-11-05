@@ -24,6 +24,7 @@ from core.federation.contract import (
 )
 from core.integrations._base.config import resolve
 from core.integrations.splunk.descriptor import SPLUNK
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,9 @@ def _splunk_event_to_finding(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "severity": severity,
         "title": event.get("search_name") or event.get("rule_name") or "Splunk Alert",
         "description": event.get("description") or event.get("_raw", "")[:500],
-        "entity_context": entity_context,
+        "entity_context": with_source_rule(
+            entity_context, event.get("search_name") or event.get("rule_name")
+        ),
         "raw_data": event,
         "anomaly_score": None,
         # Splunk names the techniques but gives no confidence: store null.

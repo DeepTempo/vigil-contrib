@@ -17,9 +17,16 @@ from core.integrations._base.config_gap import (
 )
 from core.integrations._base.ids import EXTERNAL_ID_MAX, FINDING_ID_MAX, fit_id
 from core.integrations.azure_sentinel.descriptor import AZURE_SENTINEL
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
+
+
+def _one_of(rule_ids: Any) -> Optional[str]:
+    """An incident from several analytic rules is not one detection."""
+    distinct = set(rule_ids or [])
+    return next(iter(distinct)) if len(distinct) == 1 else None
 
 
 class AzureSentinelIngestion(SIEMIngestionService):
@@ -130,6 +137,9 @@ class AzureSentinelIngestion(SIEMIngestionService):
                             else None
                         ),
                         "owner": incident.owner.email if incident.owner else None,
+                        "analytic_rule_ids": list(
+                            getattr(incident, "related_analytic_rule_ids", None) or []
+                        ),
                         "labels": (
                             [label.label_name for label in incident.labels]
                             if incident.labels
@@ -209,6 +219,9 @@ class AzureSentinelIngestion(SIEMIngestionService):
                 "data_source": "azure_sentinel",
                 "timestamp": alert.get("created_time", utcnow().isoformat()),
                 "raw_data": alert,
+                "entity_context": with_source_rule(
+                    None, _one_of(alert.get("analytic_rule_ids"))
+                ),
                 "metadata": {
                     "incident_id": alert.get("id"),
                     "status": alert.get("status"),

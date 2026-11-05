@@ -7,36 +7,38 @@ an overturn on a policy already asking, which has nothing left to move.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, literal_column, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from core.audit import trail
 from core.autonomy.track_record import (
+    ABOVE_SCOPE,
     AUTO_SEVERITIES,
     DAILY_DAYS,
     POLICY_LIFETIME,
     POLICY_REASON_PREFIX,
     WINDOW,
     Adoption,
+    AlertTally,
     CaseClosure,
-    ImportedTicket,
+    ImportedTally,
     KindMode,
     Label,
+    MarkedAlert,
     NoiseMark,
+    Origin,
     Overturn,
     PolicyEventKind,
-    SeenAlert,
     TrackRecord,
     Verdict,
     build_records,
     daily_counts,
     demotion_due,
-    imported_labels,
     is_vigil_close,
     mode_of,
     person_labels,
@@ -51,13 +53,14 @@ from core.cases.closure import (
 )
 from core.coldstart import store as coldstart_store
 from core.coldstart.baseline import (
+    BENIGN_DISPOSITIONS,
+    ENTITY_KEYS,
     MIN_STRONG_LABELS,
-    alert_from_finding,
+    TRUE_POSITIVE,
     parse_time,
-    signature_for,
+    stored_signature,
 )
 from core.coldstart.store import group_key
-from core.coldstart.tickets import outcomes_from
 from core.response.ceiling import execution_held
 from core.storage.config_service import get_config_service
 from core.storage.ip_exclusion_repository import exclusion_view_filter
@@ -73,6 +76,7 @@ from core.storage.models import (
 )
 from core.storage.models.base import case_findings
 from core.storage.models.cold_start import RunStatus
+from core.storage.source_rule import source_rule_column, source_rule_of
 from core.storage.unit_of_work import unit_of_work
 
 logger = logging.getLogger(__name__)
@@ -80,14 +84,35 @@ logger = logging.getLogger(__name__)
 VIGIL_ACTOR = "vigil"
 SETTING_KEY = "kind_autonomy.settings"
 _PROBE_SOURCE = "probe"
-_FINDING_COLUMNS = (
-    Finding.finding_id,
-    Finding.data_source,
-    Finding.title,
-    Finding.severity,
-    Finding.timestamp,
-    Finding.created_at,
-    Finding.entity_context,
+# Past any of these, the read stops and every kind says its record is incomplete.
+MAX_ALERT_GROUPS = 20_000
+MAX_PERSON_MARKS = 20_000
+MAX_CLOSURES = 20_000
+KINDS_SHOWN = 500
+
+# Masking needs a finding's entities only when its title names one of them. Grouping on them
+# otherwise would keep one row per address, which is every row on a large install.
+_ENTITIES_IN_TITLE = literal_column("""
+    CASE WHEN EXISTS (
+      SELECT 1
+      FROM jsonb_each(
+        CASE jsonb_typeof(findings.entity_context)
+          WHEN 'object' THEN findings.entity_context ELSE '{}'::jsonb END
+      ) AS field(key, value)
+      CROSS JOIN LATERAL jsonb_array_elements_text(
+        CASE jsonb_typeof(field.value)
+          WHEN 'array' THEN field.value
+          WHEN 'string' THEN jsonb_build_array(field.value)
+          ELSE '[]'::jsonb END
+      ) AS entity(name)
+      WHERE field.key IN (%s)
+        AND entity.name <> ''
+        AND position(lower(entity.name) IN lower(findings.title)) > 0
+    ) THEN findings.entity_context END
+    """ % ", ".join(f"'{key}'" for key in ENTITY_KEYS)).label("entities")
+_CLOSED_BY_POLICY = and_(
+    Finding.noise_marked_by_kind == ClosedByKind.AGENT.value,
+    Finding.noise_reason.like(f"{POLICY_REASON_PREFIX}%"),
 )
 
 
@@ -137,64 +162,95 @@ def set_close_enabled(enabled: bool, user_id: str) -> bool:
     )
 
 
-def _signature_of(row: Any) -> str:
-    """The stored row's kind. The time only decides whether the helper returns at all."""
-    alert = alert_from_finding(
-        {
-            "finding_id": row.finding_id,
-            "data_source": row.data_source,
-            "title": row.title,
-            "severity": row.severity,
-            "timestamp": row.timestamp or row.created_at,
-            "entity_context": row.entity_context,
-        }
-    )
-    return signature_for(alert)
+def _in_view() -> Tuple[Any, ...]:
+    return (Finding.data_source != _PROBE_SOURCE, exclusion_view_filter("hide"))
 
 
-def _seen_alerts(session: Session, since: datetime) -> List[SeenAlert]:
-    cutoff = _naive(since)
-    query = select(
-        *_FINDING_COLUMNS,
-        Finding.noise_marked_at,
-        Finding.noise_marked_by,
-        Finding.noise_marked_by_kind,
-        Finding.noise_reason,
-    ).where(
-        Finding.data_source != _PROBE_SOURCE,
-        exclusion_view_filter("hide"),
-        or_(
-            func.coalesce(Finding.timestamp, Finding.created_at) >= cutoff,
-            Finding.noise_marked_at >= cutoff,
-        ),
-    )
-    alerts: List[SeenAlert] = []
-    for row in session.execute(query):
-        mark = (
+def _alert_tallies(session: Session, since: datetime) -> Tuple[List[AlertTally], bool]:
+    """The window's alerts counted in the database, with whether the read stopped early."""
+    rule = source_rule_column(Finding.entity_context).label("rule")
+    rows = session.execute(
+        select(
+            Finding.data_source,
+            Finding.title,
+            _ENTITIES_IN_TITLE,
+            rule,
+            func.count().label("seen"),
+            func.count()
+            .filter(func.lower(Finding.severity).in_(sorted(ABOVE_SCOPE)))
+            .label("above_scope"),
+            func.count().filter(_CLOSED_BY_POLICY).label("closed_by_vigil"),
+        )
+        .where(
+            *_in_view(),
+            func.coalesce(Finding.timestamp, Finding.created_at) >= _naive(since),
+        )
+        .group_by(Finding.data_source, Finding.title, sql_text("3"), sql_text("4"))
+        .limit(MAX_ALERT_GROUPS + 1)
+    ).all()
+    return [
+        AlertTally(
+            stored_signature(row.data_source, row.title, row.entities),
+            row.rule,
+            row.seen,
+            row.above_scope,
+            row.closed_by_vigil,
+        )
+        for row in rows[:MAX_ALERT_GROUPS]
+    ], len(rows) > MAX_ALERT_GROUPS
+
+
+def _person_marks(session: Session, since: datetime) -> Tuple[List[MarkedAlert], bool]:
+    rows = session.execute(
+        select(
+            Finding.finding_id,
+            Finding.data_source,
+            Finding.title,
+            _ENTITIES_IN_TITLE,
+            Finding.noise_marked_at,
+            Finding.noise_marked_by,
+            Finding.noise_marked_by_kind,
+            Finding.noise_reason,
+        )
+        .where(
+            *_in_view(),
+            Finding.noise_marked_by_kind == ClosedByKind.PERSON.value,
+            Finding.noise_marked_at >= _naive(since),
+        )
+        .order_by(Finding.noise_marked_at.desc())
+        .limit(MAX_PERSON_MARKS + 1)
+    ).all()
+    return [
+        MarkedAlert(
+            row.finding_id,
+            stored_signature(row.data_source, row.title, row.entities),
             NoiseMark(
                 parse_time(row.noise_marked_at),
                 row.noise_marked_by,
                 row.noise_marked_by_kind,
                 row.noise_reason,
-            )
-            if row.noise_marked_at
-            else None
+            ),
         )
-        alerts.append(
-            SeenAlert(
-                finding_id=row.finding_id,
-                signature=_signature_of(row),
-                severity=str(row.severity or "unknown").lower(),
-                observed_at=parse_time(row.timestamp or row.created_at),
-                mark=mark,
-            )
-        )
-    return alerts
+        for row in rows[:MAX_PERSON_MARKS]
+    ], len(rows) > MAX_PERSON_MARKS
 
 
-def _closures(
-    session: Session, since: datetime, only_real: bool = False
-) -> List[CaseClosure]:
+def _daily_rows(session: Session, today: Any) -> List[Tuple[Any, bool, int]]:
+    observed = func.coalesce(Finding.timestamp, Finding.created_at)
+    day = func.date(observed)
+    by_policy = func.coalesce(_CLOSED_BY_POLICY, False)
+    first = datetime.combine(today, datetime.min.time()) - timedelta(days=DAILY_DAYS)
+    return [
+        tuple(row)
+        for row in session.execute(
+            select(day, by_policy, func.count())
+            .where(*_in_view(), observed >= first)
+            .group_by(day, by_policy)
+        )
+    ]
+
+
+def _closures(session: Session, since: datetime) -> Tuple[List[CaseClosure], bool]:
     query = (
         select(
             CaseClosureInfo.case_id,
@@ -205,25 +261,40 @@ def _closures(
         )
         .join(Case, Case.case_id == CaseClosureInfo.case_id)
         .where(Case.status == "closed", CaseClosureInfo.closed_at >= _naive(since))
+        .order_by(CaseClosureInfo.closed_at.desc())
+        .limit(MAX_CLOSURES + 1)
     )
-    if only_real:
-        query = query.where(
-            CaseClosureInfo.closure_category == ClosureCategory.RESOLVED.value,
-            CaseClosureInfo.close_channel == CHANNEL_COOKIE,
-        )
-    closed = session.execute(query).all()
+    rows = session.execute(query).all()
+    closed = rows[:MAX_CLOSURES]
     if not closed:
-        return []
-    findings: Dict[str, List[Tuple[str, str]]] = {}
-    members = session.execute(
-        select(case_findings.c.case_id, *_FINDING_COLUMNS)
-        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
-        .where(case_findings.c.case_id.in_([row.case_id for row in closed]))
-    )
-    for row in members:
-        findings.setdefault(row.case_id, []).append(
-            (row.finding_id, _signature_of(row))
+        return [], False
+    ids = [row.case_id for row in closed]
+    signatures: Dict[str, set] = {}
+    for row in session.execute(
+        select(
+            case_findings.c.case_id,
+            Finding.data_source,
+            Finding.title,
+            _ENTITIES_IN_TITLE,
         )
+        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
+        .where(case_findings.c.case_id.in_(ids))
+        .distinct()
+    ):
+        signatures.setdefault(row.case_id, set()).add(
+            stored_signature(row.data_source, row.title, row.entities)
+        )
+    # Only a person's own mark could count twice, so only those ids matter.
+    marked: Dict[str, set] = {}
+    for case_id, finding_id in session.execute(
+        select(case_findings.c.case_id, case_findings.c.finding_id)
+        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
+        .where(
+            case_findings.c.case_id.in_(ids),
+            Finding.noise_marked_by_kind == ClosedByKind.PERSON.value,
+        )
+    ):
+        marked.setdefault(case_id, set()).add(finding_id)
     return [
         CaseClosure(
             case_id=row.case_id,
@@ -231,11 +302,11 @@ def _closures(
             channel=row.close_channel,
             closed_by=row.closed_by,
             closed_at=parse_time(row.closed_at),
-            finding_ids=frozenset(f for f, _ in findings.get(row.case_id, ())),
-            signatures=frozenset(s for _, s in findings.get(row.case_id, ())),
+            finding_ids=frozenset(marked.get(row.case_id, ())),
+            signatures=frozenset(signatures.get(row.case_id, ())),
         )
         for row in closed
-    ]
+    ], len(rows) > MAX_CLOSURES
 
 
 def _overturns(session: Session, signature: Optional[str] = None) -> List[Overturn]:
@@ -250,33 +321,37 @@ def _overturns(session: Session, signature: Optional[str] = None) -> List[Overtu
     ]
 
 
-def _live_run_history(session: Session) -> Tuple[List[ImportedTicket], frozenset]:
-    """Tickets and not-benign reviews from the live run. Any other run counts for nothing."""
-    run = session.execute(
-        select(ColdStartRun.run_id, ColdStartRun.baseline).where(
+def _live_run(session: Session) -> Optional[Any]:
+    """Any run but the live one counts for nothing."""
+    return session.execute(
+        select(ColdStartRun.run_id, ColdStartRun.live_at).where(
             ColdStartRun.status == RunStatus.LIVE
         )
     ).first()
+
+
+def _imported(
+    session: Session, since: datetime
+) -> Tuple[List[ImportedTally], frozenset]:
+    """The live run's tickets per kind in the window, and the kinds marked not benign."""
+    run = _live_run(session)
     if run is None:
         return [], frozenset()
-    outcomes, _ = outcomes_from(
-        coldstart_store.load_tickets(run.run_id),
-        {a.alert_id: a for a in coldstart_store.load_alerts(run.run_id)},
-    )
-    marked = frozenset(
-        signature
-        for signature, row in ((run.baseline or {}).get("signatures") or {}).items()
-        if row.get("marked_not_benign")
-    )
-    return (
-        [
-            ImportedTicket(
-                o.signature, str(o.ticket_id), o.disposition, parse_time(o.closed_at)
-            )
-            for o in outcomes
-        ],
-        marked,
-    )
+    by_kind: Dict[str, Dict[str, Any]] = {}
+    for row in coldstart_store.ticket_counts(session, run.run_id, since):
+        kind = by_kind.setdefault(
+            row.signature, {"benign": 0, "real": 0, "last_real_at": None}
+        )
+        if row.disposition == TRUE_POSITIVE:
+            kind["real"] += row.tickets
+            kind["last_real_at"] = row.last_closed_at
+        elif row.disposition in BENIGN_DISPOSITIONS:
+            kind["benign"] += row.tickets
+    tallies = [
+        ImportedTally(signature, kind["benign"], kind["real"], kind["last_real_at"])
+        for signature, kind in by_kind.items()
+    ]
+    return tallies, coldstart_store.kinds_marked_not_benign(session, run.run_id)
 
 
 def _service_accounts(session: Session) -> frozenset:
@@ -297,28 +372,107 @@ def _adoption(session: Session, signature: str) -> Optional[Adoption]:
     )
     if event is None:
         return None
-    return Adoption(event.id, event.actor, event.reason, event.at, event.clean_labels)
-
-
-def _real_after(session: Session, signature: str, since: datetime) -> List[Label]:
-    labels, _ = person_labels(
-        (), _closures(session, since, only_real=True), _overturns(session, signature)
+    return Adoption(
+        event.id,
+        event.actor,
+        event.reason,
+        event.at,
+        event.clean_labels,
+        (event.evidence or {}).get("rule_id"),
     )
-    return [label for label in labels if label.signature == signature]
 
 
-def _settle(
-    session: Session,
-    policy: KindPolicy,
-    now: datetime,
-    imported: Iterable[Label] = (),
-) -> Optional[Adoption]:
-    """Demote a locked policy on close if it must fall back. Its adoption when it stays."""
+def _first_real_closure(
+    session: Session, signature: str, since: datetime
+) -> Optional[Label]:
+    """The earliest case a person closed real with an alert of this kind, read in pages,
+    so a close stops at the first one instead of loading them all."""
+    source = signature.partition("|")[0]
+    rows = session.execute(
+        select(
+            CaseClosureInfo.case_id,
+            CaseClosureInfo.closed_at,
+            Finding.title,
+            _ENTITIES_IN_TITLE,
+        )
+        .select_from(CaseClosureInfo)
+        .join(Case, Case.case_id == CaseClosureInfo.case_id)
+        .join(case_findings, case_findings.c.case_id == Case.case_id)
+        .join(Finding, Finding.finding_id == case_findings.c.finding_id)
+        .where(
+            Case.status == "closed",
+            CaseClosureInfo.closure_category == ClosureCategory.RESOLVED.value,
+            CaseClosureInfo.close_channel == CHANNEL_COOKIE,
+            CaseClosureInfo.closed_at >= _naive(since),
+            Finding.data_source == source,
+        )
+        .distinct()
+        .order_by(CaseClosureInfo.closed_at),
+        execution_options={"yield_per": 200},
+    )
+    try:
+        for row in rows:
+            if stored_signature(source, row.title, row.entities) == signature:
+                return Label(
+                    signature,
+                    Verdict.REAL,
+                    Origin.CASE,
+                    row.case_id,
+                    parse_time(row.closed_at),
+                )
+        return None
+    finally:
+        rows.close()
+
+
+def _imported_real(
+    session: Session, signature: str, adopted: datetime, now: datetime
+) -> List[Label]:
+    """What the live run says against this kind since adoption. A run that went live after
+    adoption brings tickets nobody weighed then, however long ago they closed."""
+    run = _live_run(session)
+    if run is None:
+        return []
+    labels = []
+    if coldstart_store.kind_marked_not_benign(session, run.run_id, signature):
+        labels.append(Label(signature, Verdict.REAL, Origin.IMPORTED, "review", now))
+    newer_run = run.live_at is not None and run.live_at > adopted
+    ticket = coldstart_store.first_true_positive(
+        session, run.run_id, signature, None if newer_run else adopted
+    )
+    if ticket is not None:
+        closed = parse_time(ticket.closed_at)
+        labels.append(
+            Label(
+                signature,
+                Verdict.REAL,
+                Origin.IMPORTED,
+                ticket.external_id,
+                max(closed, run.live_at) if newer_run else closed,
+            )
+        )
+    return labels
+
+
+def _real_after(
+    session: Session, signature: str, adopted: datetime, now: datetime
+) -> List[Label]:
+    labels, _ = person_labels((), (), _overturns(session, signature))
+    closure = _first_real_closure(session, signature, adopted)
+    return [
+        *labels,
+        *([closure] if closure else []),
+        *_imported_real(session, signature, adopted, now),
+    ]
+
+
+def _settle(session: Session, policy: KindPolicy, now: datetime) -> Optional[Adoption]:
+    """Demote a locked policy on close if it must fall back. Its adoption when it stays.
+    A failed read raises, so a caller about to close leaves the alert in the queue."""
     adoption = _adoption(session, policy.signature)
     if adoption is None:
         return None
-    real = _real_after(session, policy.signature, adoption.at)
-    real.extend(label for label in imported if label.signature == policy.signature)
+    real = _real_after(session, policy.signature, adoption.at, now)
     due = demotion_due(adoption, real, now)
     if due is None:
         return adoption
@@ -338,24 +492,27 @@ def _settle(
     return None
 
 
-def _records(
-    session: Session,
-    now: datetime,
-    history: Optional[Tuple[List[ImportedTicket], frozenset]] = None,
-) -> Tuple[Dict[str, TrackRecord], List[SeenAlert]]:
+def _records(session: Session, now: datetime) -> Dict[str, TrackRecord]:
     since = now - WINDOW
-    alerts = _seen_alerts(session, since)
-    imported, marked = history or _live_run_history(session)
+    tallies, more_alerts = _alert_tallies(session, since)
+    marks, more_marks = _person_marks(session, since)
+    closures, more_closures = _closures(session, since)
+    imported, marked = _imported(session, since)
     records = build_records(
-        alerts,
-        _closures(session, since),
+        tallies,
+        marks,
+        closures,
         imported,
         _overturns(session),
         now,
         _service_accounts(session),
         marked,
     )
-    return records, alerts
+    if more_alerts or more_marks or more_closures:
+        logger.warning("Kind records hit a read limit, so none can be adopted")
+        for record in records.values():
+            record.incomplete = True
+    return records
 
 
 def _labels_of(session: Session, ids: Iterable[str]) -> Dict[str, str]:
@@ -422,6 +579,7 @@ def _kind_view(
         "signature": record.signature,
         "source": source,
         "title": title,
+        "rule_id": (adoption.rule_id if adoption and close_on else record.rule_id),
         "mode": mode_of(close_on, last_kind).value,
         "mode_reason": latest.reason if latest and not close_on else None,
         "track_record": _track_view(record),
@@ -457,17 +615,13 @@ def _sort_key(view: Mapping[str, Any]) -> Tuple[Any, ...]:
 def kinds_view(session: Session, now: Optional[datetime] = None) -> Dict[str, Any]:
     """Every kind with its record. Settles first, so a suspension shows on this read."""
     now = now or _now()
-    history = _live_run_history(session)
-    imported_real = [
-        label for label in imported_labels(history[0]) if label.verdict is Verdict.REAL
-    ]
     closing = session.scalars(
         select(KindPolicy).where(KindPolicy.mode == PolicyMode.CLOSE).with_for_update()
     ).all()
     for policy in closing:
-        _settle(session, policy, now, imported_real)
+        _settle(session, policy, now)
     policies = {p.signature: p for p in session.scalars(select(KindPolicy))}
-    records, alerts = _records(session, now, history)
+    records = _records(session, now)
     for signature in policies:
         records.setdefault(signature, TrackRecord(signature=signature))
     kinds = sorted(
@@ -490,8 +644,10 @@ def kinds_view(session: Session, now: Optional[datetime] = None) -> Dict[str, An
             "closed_by_vigil": sum(r.closed_by_vigil for r in records.values()),
             "overturned": sum(r.overturned for r in records.values()),
         },
-        "daily": daily_counts(alerts, now.date(), DAILY_DAYS),
-        "kinds": kinds,
+        "incomplete": any(r.incomplete for r in records.values()),
+        "kinds_shown": min(len(kinds), KINDS_SHOWN),
+        "daily": daily_counts(_daily_rows(session, now.date()), now.date(), DAILY_DAYS),
+        "kinds": kinds[:KINDS_SHOWN],
     }
 
 
@@ -518,7 +674,7 @@ def adopt(
 ) -> Dict[str, Any]:
     """A person adopts close, or renews a live adoption for another full lifetime."""
     now = now or _now()
-    records, _ = _records(session, now)
+    records = _records(session, now)
     record = next((r for s, r in records.items() if group_key(s) == key), None)
     if record is None:
         raise KindNotFound(key)
@@ -541,6 +697,7 @@ def adopt(
             reason=reason,
             evidence={
                 "event": PolicyEventKind.ADOPT.value,
+                "rule_id": record.rule_id,
                 "miss_bound": record.miss_bound,
                 "closed_here_benign": record.benign_here,
                 "imported_benign": record.imported_benign,
@@ -770,7 +927,8 @@ def close_if_adopted(
         policy = session.scalar(
             select(KindPolicy)
             .where(
-                KindPolicy.signature == _signature_of(row),
+                KindPolicy.signature
+                == stored_signature(row.data_source, row.title, row.entity_context),
                 KindPolicy.mode == PolicyMode.CLOSE,
             )
             .with_for_update()
@@ -783,6 +941,8 @@ def close_if_adopted(
         )
         if (
             row.noise_marked_at is not None
+            or not adoption.rule_id
+            or source_rule_of(row.entity_context) != adoption.rule_id
             or str(row.severity or "").lower() not in AUTO_SEVERITIES
             or _on_a_case(session, finding_id)
         ):

@@ -27,6 +27,7 @@ from core.integrations._base.config_gap import (
 from core.integrations._base.ids import EXTERNAL_ID_MAX, FINDING_ID_MAX, fit_id
 from core.integrations.opensearch.client import OpenSearchService
 from core.integrations.opensearch.descriptor import OPENSEARCH
+from core.storage.source_rule import with_source_rule
 from core.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -290,7 +291,9 @@ class OpenSearchIngestion(SIEMIngestionService):
                 "severity": severity,
                 "title": title,
                 "description": description[:500],
-                "entity_context": entity_context,
+                "entity_context": with_source_rule(
+                    entity_context, rule_ids[0] if len(rule_ids) == 1 else None
+                ),
                 "raw_data": alert,
                 "anomaly_score": None,
                 "mitre_predictions": mitre_from_tags(source),

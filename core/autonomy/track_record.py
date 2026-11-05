@@ -20,6 +20,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Set,
     Tuple,
 )
 
@@ -29,14 +30,10 @@ from core.cases.closure import (
     ClosureCategory,
     closed_by_person,
 )
-from core.coldstart.baseline import (
-    BENIGN_DISPOSITIONS,
-    MIN_STRONG_LABELS,
-    TRUE_POSITIVE,
-    miss_bound,
-)
+from core.coldstart.baseline import MIN_STRONG_LABELS, miss_bound
 from core.coldstart.tickets import _bulk_closed
 from core.memory.recall_contract import VerdictOutcome
+from core.storage.source_rule import FALLBACK_TITLES
 
 # Longer than a policy lives. A kind that closed itself for 90 days earned no new labels, so
 # a window of the same length would refuse every re-adoption at expiry.
@@ -90,12 +87,21 @@ class NoiseMark:
 
 
 @dataclass(frozen=True)
-class SeenAlert:
+class AlertTally:
+    """Alerts in the window that share a kind and a source rule, counted in the database."""
+
+    signature: str
+    rule: Optional[str]
+    seen: int = 1
+    above_scope: int = 0
+    closed_by_vigil: int = 0
+
+
+@dataclass(frozen=True)
+class MarkedAlert:
     finding_id: str
     signature: str
-    severity: str
-    observed_at: datetime
-    mark: Optional[NoiseMark] = None
+    mark: NoiseMark
 
 
 @dataclass(frozen=True)
@@ -110,13 +116,13 @@ class CaseClosure:
 
 
 @dataclass(frozen=True)
-class ImportedTicket:
-    """A ticket from the live cold start run. A person decided it, somewhere else."""
+class ImportedTally:
+    """Tickets of one kind from the live cold start run. People decided them, somewhere else."""
 
     signature: str
-    ticket_id: str
-    disposition: str
-    closed_at: datetime
+    benign: int = 0
+    real: int = 0
+    last_real_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +155,17 @@ class TrackRecord:
     bulk_ignored: int = 0
     marked_not_benign: bool = False
     last_real_at: Optional[datetime] = None
+    rule_ids: Set[str] = field(default_factory=set)
+    alerts_without_rule: int = 0
+    # The database held more than one read may take, so these counts are a lower bound.
+    incomplete: bool = False
+
+    @property
+    def rule_id(self) -> Optional[str]:
+        """The one source rule this kind is, when it is one."""
+        if len(self.rule_ids) == 1 and not self.alerts_without_rule:
+            return next(iter(self.rule_ids))
+        return None
 
     @property
     def clean_labels(self) -> int:
@@ -196,7 +213,7 @@ def _closure_verdict(category: str) -> Optional[Verdict]:
 
 
 def person_labels(
-    alerts: Iterable[SeenAlert],
+    marks: Iterable[MarkedAlert],
     closures: Iterable[CaseClosure],
     overturns: Iterable[Overturn] = (),
     service_accounts: FrozenSet[str] = frozenset(),
@@ -223,21 +240,21 @@ def person_labels(
                 ],
             )
         )
-    for alert in alerts:
+    for marked in marks:
         if (
-            _person_mark(alert.mark, service_accounts)
-            and alert.finding_id not in labelled_findings
+            _person_mark(marked.mark, service_accounts)
+            and marked.finding_id not in labelled_findings
         ):
             decisions.append(
                 (
-                    {"closed_at": alert.mark.at, "closed_by": alert.mark.by},
+                    {"closed_at": marked.mark.at, "closed_by": marked.mark.by},
                     [
                         Label(
-                            alert.signature,
+                            marked.signature,
                             Verdict.BENIGN,
                             Origin.NOISE,
-                            alert.finding_id,
-                            alert.mark.at,
+                            marked.finding_id,
+                            marked.mark.at,
                         )
                     ],
                 )
@@ -258,64 +275,51 @@ def person_labels(
     return labels, ignored
 
 
-def imported_labels(tickets: Iterable[ImportedTicket]) -> List[Label]:
-    """One ticket is one label per kind, however many of its alerts it names."""
-    labels: Dict[Tuple[str, str], Label] = {}
-    for ticket in tickets:
-        if ticket.disposition == TRUE_POSITIVE:
-            verdict = Verdict.REAL
-        elif ticket.disposition in BENIGN_DISPOSITIONS:
-            verdict = Verdict.BENIGN
-        else:
-            continue
-        labels.setdefault(
-            (ticket.signature, ticket.ticket_id),
-            Label(
-                ticket.signature,
-                verdict,
-                Origin.IMPORTED,
-                ticket.ticket_id,
-                ticket.closed_at,
-            ),
-        )
-    return list(labels.values())
-
-
 _LABEL_FIELDS: Mapping[Tuple[Origin, Verdict], str] = {
     (Origin.CASE, Verdict.BENIGN): "benign_here",
     (Origin.CASE, Verdict.REAL): "real_here",
     (Origin.NOISE, Verdict.BENIGN): "benign_here",
     (Origin.OVERTURN, Verdict.REAL): "overturned",
-    (Origin.IMPORTED, Verdict.BENIGN): "imported_benign",
-    (Origin.IMPORTED, Verdict.REAL): "imported_real",
 }
 
 
 def build_records(
-    alerts: Iterable[SeenAlert],
+    tallies: Iterable[AlertTally],
+    marks: Iterable[MarkedAlert],
     closures: Iterable[CaseClosure],
-    imported: Iterable[ImportedTicket],
+    imported: Iterable[ImportedTally],
     overturns: Iterable[Overturn],
     now: datetime,
     service_accounts: FrozenSet[str] = frozenset(),
     marked_not_benign: FrozenSet[str] = frozenset(),
 ) -> Dict[str, TrackRecord]:
     since = now - WINDOW
-    alerts = list(alerts)
     records: Dict[str, TrackRecord] = {}
 
     def record(signature: str) -> TrackRecord:
         return records.setdefault(signature, TrackRecord(signature=signature))
 
-    for alert in alerts:
-        if alert.observed_at >= since:
-            row = record(alert.signature)
-            row.alerts_seen += 1
-            row.above_scope += alert.severity in ABOVE_SCOPE
-            row.closed_by_vigil += is_vigil_close(alert.mark)
+    for tally in tallies:
+        row = record(tally.signature)
+        row.alerts_seen += tally.seen
+        row.above_scope += tally.above_scope
+        row.closed_by_vigil += tally.closed_by_vigil
+        if tally.rule:
+            row.rule_ids.add(tally.rule)
+        else:
+            row.alerts_without_rule += tally.seen
 
-    here, ignored = person_labels(alerts, closures, overturns, service_accounts)
-    for label in [*here, *imported_labels(imported)]:
+    for tally in imported:
+        row = record(tally.signature)
+        row.imported_benign += tally.benign
+        row.imported_real += tally.real
+        if tally.last_real_at:
+            row.last_real_at = max(
+                row.last_real_at or tally.last_real_at, tally.last_real_at
+            )
+
+    here, ignored = person_labels(marks, closures, overturns, service_accounts)
+    for label in here:
         if label.at < since:
             continue
         row = record(label.signature)
@@ -338,7 +342,40 @@ class EligibilityRule:
     why_not: Callable[[TrackRecord], str]
 
 
+def _why_no_rule(record: TrackRecord) -> str:
+    if not record.rule_ids:
+        return (
+            "Known only by its title, which an alert's content can change. "
+            "Only a kind with a rule identifier from its source can be adopted."
+        )
+    if len(record.rule_ids) > 1:
+        return (
+            f"{len(record.rule_ids)} different source rules share this title, "
+            "so it is not one detection."
+        )
+    return f"{record.alerts_without_rule} alerts with this title name no source rule."
+
+
+def _names_a_detection(record: TrackRecord) -> bool:
+    return record.signature.partition("|")[2] not in FALLBACK_TITLES
+
+
 ELIGIBILITY_RULES: Tuple[EligibilityRule, ...] = (
+    EligibilityRule(
+        "one_source_rule",
+        lambda r: r.rule_id is not None,
+        _why_no_rule,
+    ),
+    EligibilityRule(
+        "names_a_detection",
+        _names_a_detection,
+        lambda r: "This is a connector's fallback title. It names no detection.",
+    ),
+    EligibilityRule(
+        "whole_record_read",
+        lambda r: not r.incomplete,
+        lambda r: "This install holds more alerts than one read may take, so this record is incomplete.",
+    ),
     EligibilityRule(
         "enough_clean_labels",
         lambda r: r.clean_labels >= MIN_STRONG_LABELS,
@@ -377,6 +414,7 @@ class Adoption:
     reason: str
     at: datetime
     clean_labels: int
+    rule_id: Optional[str] = None
 
     @property
     def expires_at(self) -> datetime:
@@ -404,11 +442,7 @@ def demotion_due(
         return Demotion(
             PolicyEventKind.SUSPEND,
             "A person closed an alert of this kind as real after adoption.",
-            {
-                "origin": first.origin.value,
-                "ref": first.ref,
-                "real_after_adoption": len(real),
-            },
+            {"origin": first.origin.value, "ref": first.ref},
         )
     if now >= adoption.expires_at:
         return Demotion(
@@ -476,16 +510,16 @@ def stay_reason(finding: Mapping[str, Any], source_severity: Any) -> Optional[st
 
 
 def daily_counts(
-    alerts: Iterable[SeenAlert], today: date, days: int = DAILY_DAYS
+    rows: Iterable[Tuple[date, bool, int]], today: date, days: int = DAILY_DAYS
 ) -> List[Dict[str, Any]]:
-    """Per day, alerts left for a person and alerts a policy closed."""
+    """Per day, alerts left for a person and alerts a policy closed. A row is (day,
+    whether a policy closed them, how many)."""
     start = today - timedelta(days=days - 1)
     asked: Counter = Counter()
     closed: Counter = Counter()
-    for alert in alerts:
-        day = alert.observed_at.date()
+    for day, by_policy, count in rows:
         if day >= start:
-            (closed if is_vigil_close(alert.mark) else asked)[day] += 1
+            (closed if by_policy else asked)[day] += count
     return [
         {
             "day": (start + timedelta(days=i)).isoformat(),

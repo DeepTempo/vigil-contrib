@@ -20,6 +20,7 @@ from tests.unit.autonomy_kinds.conftest import (
     ENTITIES,
     NOW,
     PERSON,
+    RULE,
     SOURCE,
     TITLE,
     add_finding,
@@ -69,12 +70,12 @@ def _adopted(client):
     assert _adopt(client).status_code == 200
 
 
-def _incoming(finding_id="new", *, severity="low", **over):
-    add_finding(finding_id, severity=severity, at=NOW)
+def _incoming(finding_id="new", *, severity="low", rule=RULE, title=TITLE, **over):
+    add_finding(finding_id, severity=severity, at=NOW, rule=rule, title=title)
     return {
         "finding_id": finding_id,
         "data_source": SOURCE,
-        "title": TITLE,
+        "title": title,
         "severity": severity,
         "description": "d",
         "timestamp": NOW.isoformat(),
@@ -698,3 +699,256 @@ def test_a_legacy_analyst_mark_cannot_show_a_person_made_it_so_it_earns_nothing(
 ):
     earn(5, kind="analyst")
     assert row_of(client)["track_record"]["agreed"] == 0
+
+
+def test_a_title_only_kind_shows_its_record_and_says_why_it_cannot_be_adopted(
+    client, admin
+):
+    earn(rule=None)
+    row = row_of(client)
+    assert row["rule_id"] is None
+    assert row["track_record"]["agreed"] == 59
+    assert row["eligible"] is False
+    assert [r["rule"] for r in row["why_not"]] == ["one_source_rule"]
+    assert "Known only by its title" in row["why_not"][0]["why"]
+    refused = _adopt(client)
+    assert refused.status_code == 409
+    assert "Known only by its title" in refused.json()["detail"]
+
+
+def test_a_kind_two_rules_share_cannot_be_adopted(client, admin):
+    earn()
+    add_finding("other-rule", rule="another-rule")
+    assert _adopt(client).status_code == 409
+    assert "2 different source rules" in row_of(client)["why_not"][0]["why"]
+
+
+async def test_an_alert_that_only_matches_the_title_is_never_closed(client, admin):
+    _adopted(client)
+    _turn_on(client)
+    assert row_of(client)["rule_id"] == RULE
+    await _through_daemon(_incoming("no-rule", rule=None))
+    await _through_daemon(_incoming("another-rule", rule="another-rule"))
+    await _through_daemon(_incoming("same-rule"))
+    assert _stored("no-rule")[0] is None
+    assert _stored("another-rule")[0] is None
+    assert _stored("same-rule")[1] == "agent"
+
+
+async def test_masking_cannot_hand_one_detection_anothers_policy(client, admin):
+    masked = "<entity> connection to <entity>"
+    earn(
+        title="Allowed connection to allowed",
+        rule="allow-rule",
+        entities={"hostnames": ["allowed"]},
+    )
+    row = next(k for k in client.get(BASE).json()["kinds"] if k["title"] == masked)
+    assert _adopt(client, row["key"]).status_code == 200
+    _turn_on(client)
+
+    add_finding(
+        "blocked-one",
+        title="Blocked connection to blocked",
+        rule="deny-rule",
+        entities={"hostnames": ["blocked"]},
+        at=NOW,
+    )
+    finding = {
+        "finding_id": "blocked-one",
+        "data_source": SOURCE,
+        "title": "Blocked connection to blocked",
+        "severity": "low",
+        "description": "d",
+        "timestamp": NOW.isoformat(),
+        "entity_context": {"hostnames": ["blocked"]},
+    }
+    await _through_daemon(finding)
+    assert _stored("blocked-one")[0] is None
+
+
+def test_a_request_cannot_claim_a_source_rule():
+    from core.storage.source_rule import source_rule_of
+
+    plain = Finding(
+        finding_id="x",
+        data_source="s",
+        entity_context={"source_rule": "claimed", "hostnames": ["a"]},
+    )
+    assert plain.entity_context == {"hostnames": ["a"]}
+    assert source_rule_of(plain.entity_context) is None
+
+
+def test_a_webhook_row_loses_its_claimed_rule_and_an_adapter_row_keeps_its_own(db):
+    from core.ingestion.ingestion_service import IngestionService
+    from core.integrations.splunk.adapter import _splunk_event_to_finding
+    from core.storage.source_rule import source_rule_of
+
+    service = IngestionService()
+    claimed = {
+        "finding_id": "webhook-1",
+        "data_source": "splunk",
+        "title": "Failed logins",
+        "severity": "low",
+        "timestamp": NOW.isoformat(),
+        "entity_context": {"source_rule": "Failed logins"},
+        "mitre_predictions": {},
+    }
+    assert service.ingest_finding(claimed)
+    adapter = _splunk_event_to_finding(
+        {"_cd": "cd-1", "search_name": "Failed logins", "_time": NOW.isoformat()}
+    )
+    assert service.ingest_finding(adapter)
+    with unit_of_work() as session:
+        assert source_rule_of(session.get(Finding, "webhook-1").entity_context) is None
+        stored = session.get(Finding, adapter["finding_id"]).entity_context
+    assert source_rule_of(stored) == "Failed logins"
+
+
+async def test_a_true_positive_ticket_stops_the_next_close_at_once(client, admin):
+    _adopted(client)
+    _turn_on(client)
+    ticket = _ticket(0, "true_positive")
+    ticket["closed_at"] = (NOW + timedelta(minutes=5)).isoformat()
+    _live_run([ticket])
+    with patch("core.autonomy.policy._now", return_value=NOW + timedelta(minutes=10)):
+        await _through_daemon(_incoming("after-ticket"))
+    assert _stored("after-ticket")[0] is None
+    assert _events(client)[0]["event"] == "suspend"
+    assert _events(client)[0]["evidence"]["origin"] == "imported"
+
+
+async def test_a_run_that_goes_live_after_adoption_is_weighed_whatever_its_dates(
+    client, admin
+):
+    _adopted(client)
+    _turn_on(client)
+    run_id = _live_run([_ticket(0, "true_positive")])
+    with unit_of_work() as session:
+        session.execute(
+            text("UPDATE cold_start_runs SET live_at = now() WHERE run_id = :r"),
+            {"r": run_id},
+        )
+    await _through_daemon(_incoming("after-go-live"))
+    assert _stored("after-go-live")[0] is None
+    assert _events(client)[0]["event"] == "suspend"
+
+
+async def test_closing_fails_closed_when_cold_start_history_cannot_be_read(
+    client, admin
+):
+    _adopted(client)
+    _turn_on(client)
+    _live_run([])
+    with patch(
+        "core.autonomy.policy.coldstart_store.first_true_positive",
+        side_effect=RuntimeError("no read"),
+    ):
+        offer = await _through_daemon(_incoming("unread"))
+    assert _stored("unread")[0] is None
+    offer.assert_awaited_once()
+
+
+def _rows_fetched(work):
+    """Every row the database handed back while ``work`` ran."""
+    from sqlalchemy import event
+
+    from core.storage.connection import get_db_manager
+
+    fetched = []
+
+    def count(_conn, cursor, _statement, _params, _context, _many):
+        fetched.append(max(cursor.rowcount, 0))
+
+    engine = get_db_manager().engine
+    event.listen(engine, "after_cursor_execute", count)
+    try:
+        work()
+    finally:
+        event.remove(engine, "after_cursor_execute", count)
+    return sum(fetched)
+
+
+def _many_findings(count, title=TITLE):
+    with unit_of_work() as session:
+        session.execute(
+            text(
+                "INSERT INTO findings (finding_id, title, data_source, severity, timestamp, "
+                "entity_context) SELECT 'bulk-' || g, :title, :source, 'low', "
+                "now() - interval '1 hour', "
+                "jsonb_build_object('src_ips', jsonb_build_array('10.0.' || (g / 250) || '.' "
+                "|| (g % 250)), 'source_rule', cast(:rule as text)) "
+                "FROM generate_series(1, :count) g"
+            ),
+            {"title": title, "source": SOURCE, "rule": RULE, "count": count},
+        )
+
+
+def test_a_page_view_counts_in_the_database_rather_than_loading_every_alert(
+    client, admin
+):
+    _many_findings(3000)
+    fetched = _rows_fetched(lambda: client.get(BASE))
+    assert fetched < 100
+    assert row_of(client)["track_record"]["alerts_seen"] == 3000
+
+
+async def test_a_close_does_not_read_every_alert_or_case(client, admin):
+    _adopted(client)
+    _turn_on(client)
+    _many_findings(3000)
+    finding = _incoming("one-more")
+    assert _rows_fetched(lambda: policy.close_if_adopted(finding, "low")) < 50
+
+
+def test_a_title_naming_its_entity_still_groups_by_the_masked_title(client, admin):
+    for name in ("alice", "bob"):
+        add_finding(
+            f"login-{name}",
+            title=f"Failed login for {name}",
+            entities={"usernames": [name]},
+        )
+    rows = {k["title"]: k for k in client.get(BASE).json()["kinds"]}
+    assert rows["Failed login for <entity>"]["track_record"]["alerts_seen"] == 2
+
+
+def test_a_read_that_hits_its_limit_says_so_and_nothing_can_be_adopted(client, admin):
+    earn()
+    add_finding("second-kind", title="Another title")
+    with patch("core.autonomy.policy.MAX_ALERT_GROUPS", 1):
+        body = client.get(BASE).json()
+        refused = _adopt(client)
+    assert body["incomplete"] is True
+    assert all(not k["eligible"] for k in body["kinds"])
+    assert refused.status_code == 409
+    assert "incomplete" in refused.json()["detail"]
+
+
+def test_one_ticket_naming_two_alerts_of_a_kind_is_one_label(client, admin):
+    add_finding("seen")
+    run_id = _live_run([])
+    with unit_of_work() as session:
+        for i in range(2):
+            session.execute(
+                text(
+                    "INSERT INTO cold_start_alerts (run_id, alert_id, source, signature, "
+                    "observed_at, title, severity, entities, payload) VALUES (:r, :a, :s, "
+                    ":k, :at, :t, 'low', '[]'::jsonb, '{}'::jsonb)"
+                ),
+                {
+                    "r": run_id,
+                    "a": f"h{i}",
+                    "s": SOURCE,
+                    "k": f"{SOURCE}|{TITLE}",
+                    "at": NOW - timedelta(days=3),
+                    "t": TITLE,
+                },
+            )
+        session.execute(
+            text(
+                "INSERT INTO cold_start_outcomes (run_id, external_id, alert_ids, "
+                "disposition, closed_at, entities) VALUES (:r, 'one', "
+                "'[\"h0\", \"h1\"]'::jsonb, 'false_positive', :at, '[]'::jsonb)"
+            ),
+            {"r": run_id, "at": NOW - timedelta(days=1)},
+        )
+    assert row_of(client)["track_record"]["imported_benign"] == 1
