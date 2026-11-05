@@ -2124,6 +2124,106 @@
   "nullable": false,
   "type": "character varying(100)"
  },
+ "column detection_proposal_events.actor": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposal_events.at": {
+  "default": "now()",
+  "nullable": false,
+  "type": "timestamp with time zone"
+ },
+ "column detection_proposal_events.evidence": {
+  "default": null,
+  "nullable": false,
+  "type": "jsonb"
+ },
+ "column detection_proposal_events.from_state": {
+  "default": null,
+  "nullable": true,
+  "type": "character varying(16)"
+ },
+ "column detection_proposal_events.id": {
+  "default": "nextval('detection_proposal_events_id_seq'::regclass)",
+  "nullable": false,
+  "type": "bigint"
+ },
+ "column detection_proposal_events.proposal_id": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(36)"
+ },
+ "column detection_proposal_events.reason": {
+  "default": "''::text",
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposal_events.sigma": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposal_events.to_state": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(16)"
+ },
+ "column detection_proposals.case_id": {
+  "default": null,
+  "nullable": true,
+  "type": "character varying(50)"
+ },
+ "column detection_proposals.created_at": {
+  "default": "now()",
+  "nullable": false,
+  "type": "timestamp with time zone"
+ },
+ "column detection_proposals.created_by": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposals.origin": {
+  "default": "'{}'::jsonb",
+  "nullable": false,
+  "type": "jsonb"
+ },
+ "column detection_proposals.proposal_id": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(36)"
+ },
+ "column detection_proposals.rule_id": {
+  "default": null,
+  "nullable": true,
+  "type": "integer"
+ },
+ "column detection_proposals.sigma": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposals.state": {
+  "default": null,
+  "nullable": false,
+  "type": "character varying(16)"
+ },
+ "column detection_proposals.technique": {
+  "default": null,
+  "nullable": true,
+  "type": "text"
+ },
+ "column detection_proposals.title": {
+  "default": null,
+  "nullable": false,
+  "type": "text"
+ },
+ "column detection_proposals.updated_at": {
+  "default": "now()",
+  "nullable": false,
+  "type": "timestamp with time zone"
+ },
  "column detection_rule_check_changes.changed_at": {
   "default": "now()",
   "nullable": false,
@@ -4417,6 +4517,17 @@
  "constraint conversations.conversations_pkey": "PRIMARY KEY (id)",
  "constraint custom_agents.custom_agents_pkey": "PRIMARY KEY (id)",
  "constraint custom_workflows.custom_workflows_pkey": "PRIMARY KEY (workflow_id)",
+ "constraint detection_proposal_events.detection_proposal_events_actor_check": "CHECK ((actor <> ''::text))",
+ "constraint detection_proposal_events.detection_proposal_events_created_as_draft_check": "CHECK (((from_state IS NOT NULL) OR ((to_state)::text = 'draft'::text)))",
+ "constraint detection_proposal_events.detection_proposal_events_evidence_check": "CHECK (((jsonb_typeof(evidence) = 'object'::text) AND (evidence <> '{}'::jsonb)))",
+ "constraint detection_proposal_events.detection_proposal_events_from_state_check": "CHECK (((from_state)::text = ANY ((ARRAY['draft'::character varying, 'linted'::character varying, 'replayed'::character varying, 'converted'::character varying, 'shadow'::character varying, 'live'::character varying, 'rejected'::character varying])::text[])))",
+ "constraint detection_proposal_events.detection_proposal_events_pkey": "PRIMARY KEY (id)",
+ "constraint detection_proposal_events.detection_proposal_events_proposal_id_fkey": "FOREIGN KEY (proposal_id) REFERENCES detection_proposals(proposal_id)",
+ "constraint detection_proposal_events.detection_proposal_events_to_state_check": "CHECK (((to_state)::text = ANY ((ARRAY['draft'::character varying, 'linted'::character varying, 'replayed'::character varying, 'converted'::character varying, 'shadow'::character varying, 'live'::character varying, 'rejected'::character varying])::text[])))",
+ "constraint detection_proposals.detection_proposals_case_id_fkey": "FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE SET NULL",
+ "constraint detection_proposals.detection_proposals_pkey": "PRIMARY KEY (proposal_id)",
+ "constraint detection_proposals.detection_proposals_rule_id_fkey": "FOREIGN KEY (rule_id) REFERENCES detection_rules(id)",
+ "constraint detection_proposals.detection_proposals_state_check": "CHECK (((state)::text = ANY ((ARRAY['draft'::character varying, 'linted'::character varying, 'replayed'::character varying, 'converted'::character varying, 'shadow'::character varying, 'live'::character varying, 'rejected'::character varying])::text[])))",
  "constraint detection_rule_check_changes.detection_rule_check_changes_pkey": "PRIMARY KEY (id)",
  "constraint detection_rule_check_changes.detection_rule_check_changes_rule_id_fkey": "FOREIGN KEY (rule_id) REFERENCES detection_rules(id)",
  "constraint detection_rule_stages.detection_rule_stages_pkey": "PRIMARY KEY (id)",
@@ -4682,6 +4793,8 @@
  "index conversations_pkey": "CREATE UNIQUE INDEX conversations_pkey ON public.conversations USING btree (id)",
  "index custom_agents_pkey": "CREATE UNIQUE INDEX custom_agents_pkey ON public.custom_agents USING btree (id)",
  "index custom_workflows_pkey": "CREATE UNIQUE INDEX custom_workflows_pkey ON public.custom_workflows USING btree (workflow_id)",
+ "index detection_proposal_events_pkey": "CREATE UNIQUE INDEX detection_proposal_events_pkey ON public.detection_proposal_events USING btree (id)",
+ "index detection_proposals_pkey": "CREATE UNIQUE INDEX detection_proposals_pkey ON public.detection_proposals USING btree (proposal_id)",
  "index detection_rule_check_changes_pkey": "CREATE UNIQUE INDEX detection_rule_check_changes_pkey ON public.detection_rule_check_changes USING btree (id)",
  "index detection_rule_stages_pkey": "CREATE UNIQUE INDEX detection_rule_stages_pkey ON public.detection_rule_stages USING btree (id)",
  "index detection_rule_versions_pkey": "CREATE UNIQUE INDEX detection_rule_versions_pkey ON public.detection_rule_versions USING btree (rule_id, version)",
@@ -4788,6 +4901,9 @@
  "index idx_custom_workflows_active": "CREATE INDEX idx_custom_workflows_active ON public.custom_workflows USING btree (is_active)",
  "index idx_custom_workflows_created_by": "CREATE INDEX idx_custom_workflows_created_by ON public.custom_workflows USING btree (created_by)",
  "index idx_custom_workflows_name": "CREATE INDEX idx_custom_workflows_name ON public.custom_workflows USING btree (name)",
+ "index idx_detection_proposal_events_proposal": "CREATE INDEX idx_detection_proposal_events_proposal ON public.detection_proposal_events USING btree (proposal_id, id)",
+ "index idx_detection_proposals_case_id": "CREATE INDEX idx_detection_proposals_case_id ON public.detection_proposals USING btree (case_id)",
+ "index idx_detection_proposals_state": "CREATE INDEX idx_detection_proposals_state ON public.detection_proposals USING btree (state)",
  "index idx_detection_rule_check_changes_latest": "CREATE INDEX idx_detection_rule_check_changes_latest ON public.detection_rule_check_changes USING btree (rule_id, check_key, changed_at DESC, id DESC)",
  "index idx_detection_rule_stages_rule": "CREATE INDEX idx_detection_rule_stages_rule ON public.detection_rule_stages USING btree (rule_id, id)",
  "index idx_detection_rules_origin_rule_id": "CREATE INDEX idx_detection_rules_origin_rule_id ON public.detection_rules USING btree (origin_rule_id)",
@@ -5893,6 +6009,63 @@
  "relation custom_workflows": {
   "acl": [
    "app:DELETE",
+   "app:INSERT",
+   "app:SELECT",
+   "app:UPDATE",
+   "owner:DELETE",
+   "owner:INSERT",
+   "owner:REFERENCES",
+   "owner:SELECT",
+   "owner:TRIGGER",
+   "owner:TRUNCATE",
+   "owner:UPDATE"
+  ],
+  "kind": "r",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": null
+ },
+ "relation detection_proposal_events": {
+  "acl": [
+   "app:INSERT",
+   "app:SELECT",
+   "owner:DELETE",
+   "owner:INSERT",
+   "owner:REFERENCES",
+   "owner:SELECT",
+   "owner:TRIGGER",
+   "owner:TRUNCATE",
+   "owner:UPDATE"
+  ],
+  "kind": "r",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": null
+ },
+ "relation detection_proposal_events_id_seq": {
+  "acl": [
+   "app:SELECT",
+   "app:USAGE",
+   "owner:SELECT",
+   "owner:UPDATE",
+   "owner:USAGE"
+  ],
+  "kind": "S",
+  "owner": "owner",
+  "row_security": [
+   false,
+   false
+  ],
+  "sequence": "[\"bigint\", 1, 1, 1, 9223372036854775807, 1, false]"
+ },
+ "relation detection_proposals": {
+  "acl": [
    "app:INSERT",
    "app:SELECT",
    "app:UPDATE",

@@ -51,6 +51,12 @@ from core.storage.models.config import (
     ThreatIndicator,
     UserPreference,
 )
+from core.storage.models.detection_proposal import (
+    DetectionProposal,
+    DetectionProposalEvent,
+    InvalidProposalMove,
+    ProposalState,
+)
 from core.storage.models.detection_rule import (
     DETECTION_RULE_STAGES,
     DETECTION_RULE_STATUSES,
@@ -169,4 +175,8 @@ __all__ = [
     "case_findings",
     "LOG_SEVERITIES",
     "LogEvent",
+    "DetectionProposal",
+    "DetectionProposalEvent",
+    "InvalidProposalMove",
+    "ProposalState",
 ]

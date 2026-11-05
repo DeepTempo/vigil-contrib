@@ -228,3 +228,38 @@ def save_rule(
     if report.error:
         result["error"] = f"written, but the overlay sync failed: {report.error}"
     return result
+
+
+def promote(
+    rule_id: int, *, actor: str, reason: str, proof: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Append the 'live' row for an overlay copy in shadow. Already live stays as it is.
+
+    The caller names the person who decided. Nothing is written to a SIEM.
+    """
+    with get_db_manager().session_scope() as session:
+        rule = session.get(DetectionRule, rule_id, with_for_update=True)
+        if rule is None or rule.source != readers.OVERLAY_SOURCE:
+            raise Refused(f"rule {rule_id} is not an overlay rule")
+        if rule.status != "active" or rule.language not in sync.STAGED_LANGUAGES:
+            raise Refused(f"rule {rule_id} has no rollout stage to move")
+        stage, version = session.execute(
+            select(DetectionRuleStage.stage, DetectionRuleStage.version)
+            .where(DetectionRuleStage.rule_id == rule_id)
+            .order_by(DetectionRuleStage.id.desc())
+            .limit(1)
+        ).one()
+        if stage not in ("shadow", "live") or version != rule.latest_version:
+            raise Refused(f"rule {rule_id} is at {stage} on version {version}")
+        if stage == "shadow":
+            session.add(
+                DetectionRuleStage(
+                    rule_id=rule_id,
+                    version=version,
+                    stage="live",
+                    actor=actor,
+                    reason=reason,
+                    proof=proof,
+                )
+            )
+        return {"rule_id": rule_id, "version": version, "stage": "live"}
